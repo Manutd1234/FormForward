@@ -1,0 +1,28 @@
+name: formforward_app
+description: FormForward — AI Running Form Coach. Wearable-powered POSE running coaching with Gemma 4.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  file_picker: ^8.0.0+1
+  http: ^1.2.2
+  image_picker: ^1.1.2
+  fl_chart: ^0.69.2
+  share_plus: ^10.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/

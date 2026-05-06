@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FormForward — AI Running Form Coach</title>
+    <meta name="description" content="AI-powered running form analysis. Upload your activity data and get coaching insights powered by local Gemma AI." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ff9b83'/%3E%3Ccircle cx='38' cy='14' r='5.5' fill='%23231b18'/%3E%3Cpath d='M22 52l8-16 6 8 10-20M28 36l-8 4M36 24l8 2' fill='none' stroke='%23231b18' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <div class="brand-row">
+            <div class="brand-mark" aria-label="FormForward"><svg viewBox="0 0 48 48" width="28" height="28" fill="none" stroke="#231b18" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="30" cy="8" r="4" fill="#231b18" stroke="none"/><path d="M14 42l7-14 5 7 9-18M21 28l-7 3.5M29 17l7 1.5"/></svg></div>
+            <div>
+              <p class="eyebrow">Local wearable coaching</p>
+              <h1>FormForward</h1>
+            </div>
+          </div>
+        </div>
+        </div>
+      </header>
+
+      <!-- ═══════════ TAB: Dashboard ═══════════ -->
+      <section class="tab-pane active" data-pane="dashboard" id="pane-dashboard">
+        <section class="panel upload-panel" style="margin-bottom: 24px; padding: 16px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
+          <div>
+            <h2 style="font-size: 1.2rem; color: var(--accent);">Upload Activity Data</h2>
+            <p style="font-size: 0.85rem; color: var(--muted); margin-top: 4px;">Load your GPS/CSV run data to begin FormForward analysis.</p>
+          </div>
+          <div class="topbar-actions" style="display: flex; gap: 10px;">
+            <label class="file-button primary">
+              <input id="fileInput" type="file" accept=".csv,.gpx,text/csv,application/gpx+xml,text/xml" />
+              <span>Upload activity</span>
+            </label>
+            <button id="loadSampleButton" type="button">Sample CSV</button>
+            <button id="loadSampleGpxButton" type="button">Sample GPX</button>
+          </div>
+        </section>
+        <section class="hero-grid">
+          <article class="hero-card">
+            <div>
+              <p class="eyebrow">Gemma 4 form lab</p>
+              <h2>Your Form,<br />Your Forward.</h2>
+            </div>
+            <div class="runner-figure" aria-hidden="true">
+              <img src="./src/optimal_form.png" alt="Optimal running form" class="optimal-form-img" />
+            </div>
+            <div class="hero-meta">
+              <span>AI-powered</span>
+              <strong>Predict & Perform</strong>
+            </div>
+          </article>
+          <section class="summary-grid" id="summaryGrid" aria-label="Run summary"></section>
+        </section>
+
+        <!-- ═══════════ Optimal Form Visualization ═══════════ -->
+        <section class="optimal-form-section" id="optimalFormSection">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">AI-generated optimal form</p>
+              <h2>Your Personalized Form Blueprint</h2>
+            </div>
+            <div class="pipeline-badge" id="pipelineBadge">
+              <span class="pipeline-dot"></span>
+              <span>Pipeline idle</span>
+            </div>
+          </div>
+          <div class="optimal-form-grid">
+            <div class="optimal-form-visual">
+              <img src="./src/optimal_form.png" alt="Optimal POSE running form" id="optimalFormImage" />
+              <div class="form-angle-overlays" id="formAngleOverlays">
+                <!-- Angle annotations rendered by JS -->
+              </div>
+            </div>
+            <div class="form-adjustments-panel" id="formAdjustmentsPanel">
+              <div class="adjustment-header">
+                <h3>Form Adjustments</h3>
+                <span class="adjustment-source" id="adjustmentSource">Based on POSE Method defaults</span>
+              </div>
+              <div class="adjustment-list" id="adjustmentList">
+                <div class="adjustment-item default">
+                  <div class="adj-icon">🎯</div>
+                  <div class="adj-content">
+                    <strong>Trunk Lean</strong>
+                    <span class="adj-angles">Optimal: 8–12°</span>
+                    <p>Lean from the ankles, not the waist — let gravity assist forward motion.</p>
+                  </div>
+                </div>
+                <div class="adjustment-item default">
+                  <div class="adj-icon">🦵</div>
+                  <div class="adj-content">
+                    <strong>Knee Drive</strong>
+                    <span class="adj-angles">Optimal: 70–90°</span>
+                    <p>Lift the knee to allow the foot to land under the center of mass.</p>
+                  </div>
+                </div>
+                <div class="adjustment-item default">
+                  <div class="adj-icon">💪</div>
+                  <div class="adj-content">
+                    <strong>Elbow Angle</strong>
+                    <span class="adj-angles">Optimal: 60–90°</span>
+                    <p>Compact arm carry conserves energy and drives rhythm.</p>
+                  </div>
+                </div>
+                <div class="adjustment-item default">
+                  <div class="adj-icon">🧠</div>
+                  <div class="adj-content">
+                    <strong>Head Position</strong>
+                    <span class="adj-angles">Optimal: 80–110°</span>
+                    <p>Neutral gaze 10–15m ahead keeps the spine aligned.</p>
+                  </div>
+                </div>
+              </div>
+              <button id="runFullPipelineButton" type="button" class="full-pipeline-btn">
+                ⚡ Run Full Pipeline (PDF → Gemma 4 → Form)
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="status-strip" aria-live="polite">
+          <div>
+            <span class="status-label">Source</span>
+            <strong id="sourceName">Sample run loaded</strong>
+          </div>
+          <div>
+            <span class="status-label">Privacy</span>
+            <strong>Local by default</strong>
+          </div>
+          <div>
+            <span class="status-label">Pipeline</span>
+            <strong>Import -> Detect -> Coach</strong>
+          </div>
+        </section>
+
+        <!-- Compact Breakdowns Preview -->
+        <section class="dashboard-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Detected moments</p>
+              <h2>Form Breakdowns</h2>
+            </div>
+            <button class="deep-dive-link" type="button" data-goto="breakdowns">Deep dive →</button>
+          </div>
+          <div class="compact-event-list" id="compactEventList"></div>
+        </section>
+
+        <!-- Compact Coaching Preview -->
+        <section class="dashboard-section">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">POSE translation</p>
+              <h2>Coaching Insights</h2>
+            </div>
+            <button class="deep-dive-link" type="button" data-goto="coach">Deep dive →</button>
+          </div>
+          <div class="compact-coach-list" id="compactCoachList"></div>
+        </section>
+
+        <!-- Metric Coverage -->
+        <section class="panel metric-coverage">
+          <div>
+            <p class="eyebrow">Metric coverage</p>
+            <h2>Available signals</h2>
+          </div>
+          <div class="coverage-columns">
+            <div>
+              <h3>Detected</h3>
+              <div class="tag-row" id="availableMetrics"></div>
+            </div>
+            <div>
+              <h3>Missing</h3>
+              <div class="tag-row muted" id="missingMetrics"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ═══════════ TAB: Analysis ═══════════ -->
+      <section class="tab-pane" data-pane="analysis" id="pane-charts">
+        <article class="panel chart-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Metric timeline</p>
+              <h2 id="chartTitle">Cadence</h2>
+            </div>
+            <div class="metric-tabs" id="metricTabs" aria-label="Choose metric"></div>
+          </div>
+          <div class="chart-wrap">
+            <svg id="metricChart" role="img" aria-label="Metric chart"></svg>
+          </div>
+          <div class="legend-row" id="legendRow"></div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: Improvements ═══════════ -->
+      <section class="tab-pane" data-pane="improvements" id="pane-improvements">
+        <article class="panel improvements-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Actionable adjustments</p>
+              <h2>Form Improvements</h2>
+            </div>
+          </div>
+          <div class="improvements-content" style="padding: 16px;">
+            <p style="color: var(--muted); font-size: 0.95rem; line-height: 1.6;">Based on your analysis, focus on the following biomechanical adjustments to optimize your POSE method form:</p>
+            <ul style="margin-top: 16px; padding-left: 20px; color: var(--cream); font-size: 0.95rem; line-height: 1.8;">
+              <li><strong>Increase Cadence:</strong> Aim for 175-180 spm to reduce ground contact time and vertical oscillation.</li>
+              <li><strong>Pull, Don't Push:</strong> Focus on pulling your foot up under your hips using your hamstrings instead of pushing off the ground.</li>
+              <li><strong>Lean Forward:</strong> Lean from the ankles (not the waist) to harness gravity.</li>
+            </ul>
+          </div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: Breakdowns ═══════════ -->
+      <section class="tab-pane" data-pane="breakdowns" id="pane-breakdowns">
+        <article class="panel event-panel-full">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Detected moments</p>
+              <h2>Form Breakdowns</h2>
+            </div>
+          </div>
+          <div class="event-list" id="eventList"></div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: Video ═══════════ -->
+      <section class="tab-pane" data-pane="video" id="pane-video">
+        <article class="panel video-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Video evidence</p>
+              <h2>Running form frames</h2>
+            </div>
+            <div class="video-actions">
+              <button id="liveTrackingButton" type="button" style="background: linear-gradient(135deg, #ffb49f, #ff856e); color: #231b18; border: none; padding: 0 14px; border-radius: 8px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; min-height: 42px;">🔴 Live Tracking</button>
+              <label class="file-button">
+                <input id="videoInput" type="file" accept="video/*" />
+                <span>Upload video</span>
+              </label>
+              <button id="analyzeVisionButton" type="button" disabled>Analyze Pose</button>
+            </div>
+          </div>
+          <video id="videoPreview" controls muted playsinline hidden></video>
+          <div class="evidence-status" id="videoStatus">No video loaded</div>
+          <div class="frame-strip" id="frameStrip"></div>
+        </article>
+
+        <!-- CV Pipeline Status -->
+        <div class="cv-pipeline-strip" id="cvPipelineStrip">
+          <div class="pipeline-stage">
+            <span class="pipeline-icon">🎯</span>
+            <div>
+              <strong>Pose Detection</strong>
+              <p id="poseDetectionStatus">Initializing MediaPipe…</p>
+            </div>
+          </div>
+          <div class="pipeline-stage">
+            <span class="pipeline-icon">📐</span>
+            <div>
+              <strong>Angle Analysis</strong>
+              <p id="angleAnalysisStatus">Waiting for pose data</p>
+            </div>
+          </div>
+          <div class="pipeline-stage">
+            <span class="pipeline-icon">🏷️</span>
+            <div>
+              <strong>Form Classification</strong>
+              <p id="formClassStatus">Waiting for angles</p>
+            </div>
+          </div>
+          <div class="pipeline-stage">
+            <span class="pipeline-icon">🤖</span>
+            <div>
+              <strong>VLM Coaching</strong>
+              <p>Gemma 4 — use AI Coach tab</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pose Overlay Frames -->
+        <article class="panel vision-panel" id="visionPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Pose estimation</p>
+              <h2>Skeleton Overlay</h2>
+            </div>
+          </div>
+          <div class="pose-frame-strip" id="poseFrameStrip"></div>
+        </article>
+
+        <!-- Biomechanical Angles -->
+        <article class="panel angle-panel" id="anglePanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Biomechanical angles</p>
+              <h2>Running Form Metrics</h2>
+            </div>
+          </div>
+          <div class="angle-grid" id="angleGrid"></div>
+        </article>
+
+        <!-- Form Assessment -->
+        <article class="panel assessment-panel" id="assessmentPanel" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Form classification</p>
+              <h2>POSE Method Assessment</h2>
+            </div>
+            <div class="form-score-badge" id="formScoreBadge"></div>
+          </div>
+          <div class="assessment-columns" id="assessmentColumns"></div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: Research ═══════════ -->
+      <section class="tab-pane" data-pane="research" id="pane-research">
+        <article class="panel research-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Data Ingestion for ML Training</p>
+              <h2>Biomechanical Source Scraper</h2>
+            </div>
+          </div>
+          <div style="display: grid; gap: 16px; margin-bottom: 16px; grid-template-columns: 1fr 1fr;">
+            <!-- URL Scraper -->
+            <div style="background: var(--surface); padding: 16px; border-radius: 8px; border: 1px solid var(--line);">
+              <h3 style="color: var(--accent); font-size: 0.95rem; margin-bottom: 8px;">Website Scraper</h3>
+              <p style="font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;">Enter URLs (comma-separated) to scrape articles on optimal running form.</p>
+              <textarea id="researchUrls" aria-label="Research URLs" placeholder="https://example.com/running-form" style="width: 100%; height: 60px; background: rgba(0,0,0,0.2); border: 1px solid var(--line); border-radius: 4px; color: var(--text); padding: 8px; font-size: 0.85rem; margin-bottom: 12px;"></textarea>
+              <button id="researchButton" type="button" style="width: 100%; background: rgba(0, 229, 255, 0.15); color: var(--accent); border: 1px solid var(--accent);">Scrape URLs</button>
+            </div>
+            
+            <!-- PDF Upload -->
+            <div style="background: var(--surface); padding: 16px; border-radius: 8px; border: 1px solid var(--line);">
+              <h3 style="color: var(--amber); font-size: 0.95rem; margin-bottom: 8px;">PDF Analyzer</h3>
+              <p style="font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;">Upload research papers (PDF) to train the machine learning model.</p>
+              <label class="file-button" style="display: flex; height: 60px; border-style: dashed; margin-bottom: 12px; flex-direction: column; justify-content: center; background: rgba(255, 140, 0, 0.05); border-color: rgba(255, 140, 0, 0.3);">
+                <input id="pdfInput" type="file" accept="application/pdf" />
+                <span style="font-size: 0.85rem; color: var(--amber);">+ Select PDF Document</span>
+              </label>
+              <button id="analyzePdfButton" type="button" style="width: 100%; background: rgba(255, 140, 0, 0.15); color: var(--amber); border: 1px solid var(--amber);">Analyze PDF</button>
+            </div>
+          </div>
+          
+          <div class="evidence-status" id="researchStatus" style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: 6px; font-size: 0.85rem; color: var(--muted);">Waiting for sources...</div>
+          <div class="research-list" id="researchList" style="margin-top: 16px;"></div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: History ═══════════ -->
+      <section class="tab-pane" data-pane="history" id="pane-history">
+        <article class="panel history-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Data Vault</p>
+              <h2>Activity & Research History</h2>
+            </div>
+          </div>
+          <div class="history-content" style="padding: 16px;">
+            <p style="color: var(--muted); font-size: 0.95rem; margin-bottom: 20px;">Review your previously clocked runs, uploaded videos, and scraped research sources.</p>
+            
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+              <!-- History Item 1: Run -->
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 1.5rem;">📊</span>
+                  <div>
+                    <h4 style="margin: 0; color: #fff; font-size: 0.95rem;">Morning 5k Tempo</h4>
+                    <p style="margin: 4px 0 0; color: var(--muted); font-size: 0.8rem;">CSV Upload • 2026-05-01</p>
+                  </div>
+                </div>
+                <button type="button" style="background: transparent; border: 1px solid var(--line); color: var(--text); padding: 6px 12px; font-size: 0.8rem;">Load</button>
+              </div>
+
+              <!-- History Item 2: Video -->
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 1.5rem;">🎥</span>
+                  <div>
+                    <h4 style="margin: 0; color: #fff; font-size: 0.95rem;">Track Sprint Form</h4>
+                    <p style="margin: 4px 0 0; color: var(--muted); font-size: 0.8rem;">MP4 Video • 2026-04-28</p>
+                  </div>
+                </div>
+                <button type="button" style="background: transparent; border: 1px solid var(--line); color: var(--text); padding: 6px 12px; font-size: 0.8rem;">Load</button>
+              </div>
+
+              <!-- History Item 3: PDF Scrape (PaddleOCR) -->
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(255,140,0,0.05); border: 1px solid rgba(255,140,0,0.2); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 1.5rem;">📄</span>
+                  <div>
+                    <h4 style="margin: 0; color: var(--amber); font-size: 0.95rem;">Biomechanics of Elite Sprinters</h4>
+                    <p style="margin: 4px 0 0; color: var(--muted); font-size: 0.8rem;">PDF Scraped (PaddleOCR) • 2026-04-25</p>
+                  </div>
+                </div>
+                <button type="button" style="background: transparent; border: 1px solid var(--amber); color: var(--amber); padding: 6px 12px; font-size: 0.8rem;">View Data</button>
+              </div>
+
+              <!-- History Item 4: Web Scrape (Scrapy) -->
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(0,229,255,0.05); border: 1px solid rgba(0,229,255,0.2); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <span style="font-size: 1.5rem;">🌐</span>
+                  <div>
+                    <h4 style="margin: 0; color: var(--accent); font-size: 0.95rem;">Optimal Cadence Study</h4>
+                    <p style="margin: 4px 0 0; color: var(--muted); font-size: 0.8rem;">Web Scraped (Scrapy) • 2026-04-20</p>
+                  </div>
+                </div>
+                <button type="button" style="background: transparent; border: 1px solid var(--accent); color: var(--accent); padding: 6px 12px; font-size: 0.8rem;">View Data</button>
+              </div>
+
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <!-- ═══════════ TAB: AI Coach ═══════════ -->
+      <section class="tab-pane" data-pane="coach" id="pane-coach">
+        <div class="coach-grid">
+          <article class="panel coach-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Custom Training</p>
+                <h2>Train Gemma 4 Model</h2>
+              </div>
+            </div>
+            <div class="gemma-runner" style="margin-bottom: 24px; padding: 16px; background: rgba(243, 161, 43, 0.08); border-radius: 8px; border: 1px solid rgba(243, 161, 43, 0.3);">
+              <div>
+                <h3 style="color: var(--amber);">Fine-tune on your data</h3>
+                <p style="font-size: 0.85rem; color: var(--muted); margin-top: 4px;">Upload running data over time to personalize Gemma 4's form improvement coaching.</p>
+              </div>
+              <div class="gemma-controls" style="margin-top: 12px;">
+                <label class="file-button" style="border-color: rgba(243, 161, 43, 0.5);">
+                  <input id="trainDataInput" type="file" multiple accept=".csv,.json,.mp4" />
+                  <span style="color: var(--amber);">Upload Data</span>
+                </label>
+                <button id="startTrainingButton" type="button" style="background: rgba(243, 161, 43, 0.2); color: #fffaf4;">Start Training</button>
+              </div>
+            </div>
+
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">POSE translation</p>
+                <h2>Coaching cards</h2>
+              </div>
+            </div>
+            <div class="gemma-runner">
+              <div>
+                <h3>Local Gemma</h3>
+                <p id="gemmaStatus">Idle</p>
+              </div>
+              <div class="gemma-controls">
+                <input id="gemmaModelInput" aria-label="Ollama model" />
+                <button id="generateGemmaButton" type="button">Generate</button>
+              </div>
+            </div>
+            <div id="gemmaOutput" class="gemma-output" aria-live="polite"></div>
+            <div class="coach-list" id="coachList"></div>
+          </article>
+
+          <article class="panel payload-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Gemma-ready handoff</p>
+                <h2>Structured report</h2>
+              </div>
+              <button id="copyPayloadButton" type="button">Copy JSON</button>
+            </div>
+            <pre id="payloadOutput"></pre>
+          </article>
+        </div>
+      </section>
+
+      <!-- Bottom Tab Bar -->
+      <nav class="tab-bar bottom-nav" id="tabBar" aria-label="Main navigation">
+        <button class="tab active" data-tab="dashboard" type="button">
+          <span class="tab-icon">📊</span>
+          <span class="tab-label">Dashboard</span>
+        </button>
+        <button class="tab" data-tab="analysis" type="button">
+          <span class="tab-icon">📈</span>
+          <span class="tab-label">Analysis</span>
+        </button>
+        <button class="tab" data-tab="improvements" type="button">
+          <span class="tab-icon">✨</span>
+          <span class="tab-label">Improvements</span>
+        </button>
+        <button class="tab" data-tab="breakdowns" type="button">
+          <span class="tab-icon">⚠️</span>
+          <span class="tab-label">Breakdowns</span>
+        </button>
+        <button class="tab" data-tab="video" type="button">
+          <span class="tab-icon">🎥</span>
+          <span class="tab-label">Video</span>
+        </button>
+        <button class="tab" data-tab="research" type="button">
+          <span class="tab-icon">🔬</span>
+          <span class="tab-label">Research</span>
+        </button>
+        <button class="tab" data-tab="history" type="button">
+          <span class="tab-icon">🕒</span>
+          <span class="tab-label">History</span>
+        </button>
+        <button class="tab" data-tab="coach" type="button">
+          <span class="tab-icon">🤖</span>
+          <span class="tab-label">AI Coach</span>
+        </button>
+      </nav>
+    </main>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
