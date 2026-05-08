@@ -3,3 +3,9 @@ node_modules/
 coverage/
 dist/
 *.log
+.venv/
+local-models/gemma4/
+scripts/__pycache__/
+scripts/scrapers/__pycache__/
+scripts/scrapers/PaddleOCR-main/
+scripts/scrapers/Scrapegraph-ai-main/

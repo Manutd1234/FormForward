@@ -238,7 +238,7 @@
               <h2>Running form frames</h2>
             </div>
             <div class="video-actions">
-              <button id="liveTrackingButton" type="button" style="background: linear-gradient(135deg, #ffb49f, #ff856e); color: #231b18; border: none; padding: 0 14px; border-radius: 8px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; min-height: 42px;">🔴 Live Tracking</button>
+              <button id="liveTrackingButton" type="button" style="background: linear-gradient(135deg, #ffb49f, #ff856e); color: #231b18; border: none; padding: 0 14px; border-radius: 8px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; min-height: 42px;">Start Live Tracking</button>
               <label class="file-button">
                 <input id="videoInput" type="file" accept="video/*" />
                 <span>Upload video</span>
@@ -250,6 +250,42 @@
           <div class="evidence-status" id="videoStatus">No video loaded</div>
           <div class="frame-strip" id="frameStrip"></div>
         </article>
+
+        <section class="live-vision-grid">
+          <article class="panel live-score-panel" id="liveScorePanel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Real-time posture monitor</p>
+                <h2>Current vs Optimal</h2>
+              </div>
+              <div class="live-score-chip" id="liveScoreChip">--/100</div>
+            </div>
+            <div class="live-score-hero">
+              <div class="live-score-ring">
+                <div class="live-score-ring-inner" id="liveScoreRingValue">--</div>
+              </div>
+              <div class="live-score-copy" id="liveScoreCopy">
+                Start live tracking to compare your current running posture against the target POSE profile.
+              </div>
+            </div>
+            <div class="body-point-grid" id="bodyPointGrid"></div>
+          </article>
+
+          <article class="panel live-insights-panel" id="liveInsightsPanel">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Live coaching explanation</p>
+                <h2>What Is Off Right Now</h2>
+              </div>
+              <div class="live-gemma-status" id="liveGemmaStatus">Waiting for live data</div>
+            </div>
+            <div class="live-insight-list" id="liveInsightList"></div>
+            <div class="live-gemma-card" id="liveGemmaCard">
+              <h3>Gemma 4 live coach</h3>
+              <p id="liveGemmaNarrative">When landmarks begin streaming, Gemma will explain which body points are out of range and what to correct first.</p>
+            </div>
+          </article>
+        </section>
 
         <!-- CV Pipeline Status -->
         <div class="cv-pipeline-strip" id="cvPipelineStrip">
@@ -321,35 +357,126 @@
       <!-- ═══════════ TAB: Research ═══════════ -->
       <section class="tab-pane" data-pane="research" id="pane-research">
         <article class="panel research-panel">
-          <div class="panel-heading compact">
+          <div class="research-hero">
             <div>
-              <p class="eyebrow">Data Ingestion for ML Training</p>
-              <h2>Biomechanical Source Scraper</h2>
+              <p class="eyebrow">Research Console</p>
+              <h2>Source Lab</h2>
+              <p class="research-subcopy">Capture notes manually, scrape URLs, preview PDFs, and keep the evidence trail visible while you build a coaching brief.</p>
+            </div>
+            <div class="research-badge-group">
+              <div class="research-status-chip" id="backendStatusBadge">Backend checking…</div>
+              <div class="research-status-chip accent">Browser vault enabled</div>
             </div>
           </div>
-          <div style="display: grid; gap: 16px; margin-bottom: 16px; grid-template-columns: 1fr 1fr;">
-            <!-- URL Scraper -->
-            <div style="background: var(--surface); padding: 16px; border-radius: 8px; border: 1px solid var(--line);">
-              <h3 style="color: var(--accent); font-size: 0.95rem; margin-bottom: 8px;">Website Scraper</h3>
-              <p style="font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;">Enter URLs (comma-separated) to scrape articles on optimal running form.</p>
-              <textarea id="researchUrls" aria-label="Research URLs" placeholder="https://example.com/running-form" style="width: 100%; height: 60px; background: rgba(0,0,0,0.2); border: 1px solid var(--line); border-radius: 4px; color: var(--text); padding: 8px; font-size: 0.85rem; margin-bottom: 12px;"></textarea>
-              <button id="researchButton" type="button" style="width: 100%; background: rgba(0, 229, 255, 0.15); color: var(--accent); border: 1px solid var(--accent);">Scrape URLs</button>
-            </div>
-            
-            <!-- PDF Upload -->
-            <div style="background: var(--surface); padding: 16px; border-radius: 8px; border: 1px solid var(--line);">
-              <h3 style="color: var(--amber); font-size: 0.95rem; margin-bottom: 8px;">PDF Analyzer</h3>
-              <p style="font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;">Upload research papers (PDF) to train the machine learning model.</p>
-              <label class="file-button" style="display: flex; height: 60px; border-style: dashed; margin-bottom: 12px; flex-direction: column; justify-content: center; background: rgba(255, 140, 0, 0.05); border-color: rgba(255, 140, 0, 0.3);">
-                <input id="pdfInput" type="file" accept="application/pdf" />
-                <span style="font-size: 0.85rem; color: var(--amber);">+ Select PDF Document</span>
+
+          <div class="research-stat-grid">
+            <article class="research-stat-card">
+              <span>Active sources</span>
+              <strong id="sourceCountBadge">0</strong>
+              <p>Browser vault + live backend results</p>
+            </article>
+            <article class="research-stat-card">
+              <span>PDF extraction</span>
+              <strong id="pdfEngineLabel">Idle</strong>
+              <p>Shows the local engine that handled the last document</p>
+            </article>
+            <article class="research-stat-card">
+              <span>Backend state</span>
+              <strong id="backendStatusText">Checking</strong>
+              <p>Detects when the local API is unavailable before you hit a dead button</p>
+            </article>
+          </div>
+
+          <div class="research-workbench">
+            <section class="research-composer">
+              <div class="research-card-head">
+                <div>
+                  <p class="eyebrow">Manual note</p>
+                  <h3>Browser Source Composer</h3>
+                </div>
+                <div class="composer-count" id="composerCharCount">0 chars</div>
+              </div>
+
+              <label class="field-block">
+                <span>Source title</span>
+                <input id="manualSourceTitle" type="text" placeholder="Cadence and ground contact time study" />
               </label>
-              <button id="analyzePdfButton" type="button" style="width: 100%; background: rgba(255, 140, 0, 0.15); color: var(--amber); border: 1px solid var(--amber);">Analyze PDF</button>
-            </div>
+
+              <label class="field-block">
+                <span>URL or citation</span>
+                <input id="manualSourceUrl" type="text" placeholder="https://example.com/study or Dr. Nicholas Romanov" />
+              </label>
+
+              <label class="field-block grow">
+                <span>Extracted text / findings / summary</span>
+                <textarea id="manualSourceSummary" placeholder="Paste extracted text, study notes, or biomechanics findings here..."></textarea>
+              </label>
+
+              <div class="composer-actions">
+                <button id="addManualSourceButton" type="button" class="primary-action">Store in browser vault</button>
+                <p class="composer-help">Use this when the backend is offline or when you want tighter control over the source notes sent into Gemma.</p>
+              </div>
+            </section>
+
+            <section class="research-ingestion">
+              <article class="ingest-card">
+                <div class="research-card-head">
+                  <div>
+                    <p class="eyebrow">Web ingestion</p>
+                    <h3>URL Scraper</h3>
+                  </div>
+                  <div class="mini-state" id="urlScrapeState">Ready</div>
+                </div>
+                <p class="ingest-copy">Queue a handful of trusted pages and turn them into short evidence cards instead of raw copy-paste dumps.</p>
+                <textarea id="researchUrls" aria-label="Research URLs" placeholder="https://example.com/running-form&#10;https://example.com/pose-method"></textarea>
+                <div class="ingest-actions">
+                  <button id="researchButton" type="button">Scrape URLs</button>
+                </div>
+              </article>
+
+              <article class="ingest-card pdf-card">
+                <div class="research-card-head">
+                  <div>
+                    <p class="eyebrow">Document ingestion</p>
+                    <h3>PDF Extractor</h3>
+                  </div>
+                  <div class="mini-state" id="pdfState">Idle</div>
+                </div>
+                <p class="ingest-copy">Preview the file immediately, then run the local extractor with a browser-friendly fallback path when backend OCR is missing.</p>
+                <label class="pdf-dropzone">
+                  <input id="pdfInput" type="file" accept="application/pdf" />
+                  <span class="pdf-drop-title">Select PDF document</span>
+                  <span class="pdf-drop-subtitle">Preview first, extract second</span>
+                </label>
+                <div class="ingest-actions">
+                  <button id="analyzePdfButton" type="button">Analyze PDF</button>
+                </div>
+                <div id="pdfMeta" class="pdf-meta">No PDF selected.</div>
+                <div class="pdf-preview-shell" id="pdfPreviewShell" hidden>
+                  <iframe id="pdfPreviewFrame" title="Uploaded PDF preview"></iframe>
+                </div>
+                <div class="pdf-extract-preview" id="pdfExtractPreview">Extracted text preview will appear here after analysis.</div>
+              </article>
+            </section>
           </div>
-          
-          <div class="evidence-status" id="researchStatus" style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: 6px; font-size: 0.85rem; color: var(--muted);">Waiting for sources...</div>
-          <div class="research-list" id="researchList" style="margin-top: 16px;"></div>
+
+          <div class="research-toolbar">
+            <div class="research-toolbar-copy">
+              <strong id="researchStatus">Waiting for sources...</strong>
+              <span>We keep the current backend state and last extraction result visible here so failures don’t disappear.</span>
+            </div>
+            <button id="clearAllSourcesButton" type="button" class="ghost-action">Clear dynamic sources</button>
+          </div>
+
+          <div class="research-results-shell">
+            <div class="research-results-head">
+              <div>
+                <p class="eyebrow">Evidence shelf</p>
+                <h3>Active Sources</h3>
+              </div>
+            </div>
+            <div class="research-list" id="researchList"></div>
+          </div>
         </article>
       </section>
 
@@ -457,6 +584,15 @@
               <div class="gemma-controls">
                 <input id="gemmaModelInput" aria-label="Ollama model" />
                 <button id="generateGemmaButton" type="button">Generate</button>
+              </div>
+            </div>
+            <div class="gemma-runner" style="margin-top:-2px;">
+              <div>
+                <h3>Repository-local provider</h3>
+                <p>Optional: point FormForward to a local Gemma checkout instead of Ollama.</p>
+              </div>
+              <div class="gemma-controls">
+                <input id="localGemmaPathInput" aria-label="Local Gemma path" placeholder="./local-models/gemma4" />
               </div>
             </div>
             <div id="gemmaOutput" class="gemma-output" aria-live="polite"></div>

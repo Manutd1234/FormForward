@@ -34,6 +34,10 @@ createServer(async (request, response) => {
       await handleResearch(request, response);
       return;
     }
+    if (url.pathname === "/api/health" && request.method === "GET") {
+      writeJson(response, { ok: true, service: "FormForward", timestamp: new Date().toISOString() });
+      return;
+    }
     if (url.pathname === "/api/scrape-pdf" && request.method === "POST") {
       await handlePdfScrape(request, response);
       return;
@@ -53,20 +57,20 @@ createServer(async (request, response) => {
 async function handleGemma(request, response) {
   const payload = await readJsonBody(request, 18_000_000);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 45000);
-    const ollamaResponse = await fetch("http://127.0.0.1:11434/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    const text = await ollamaResponse.text();
-    response.writeHead(ollamaResponse.ok ? 200 : 502, { "Content-Type": "application/json; charset=utf-8" });
-    response.end(ollamaResponse.ok ? text : JSON.stringify({ error: `Ollama returned ${ollamaResponse.status}. Check that ${payload.model} is installed and running.` }));
+    const result = payload.local_model_path
+      ? await runLocalGemma(payload)
+      : await runOllamaChat(payload, 45000);
+    writeJson(response, result);
   } catch {
-    writeJson(response, { error: `Ollama unavailable. Install Ollama, then run: ollama run ${payload.model || "gemma4"}` });
+    writeJson(
+      response,
+      {
+        error: payload.local_model_path
+          ? `Local Gemma runner unavailable. Check ${payload.local_model_path} and install Python transformers dependencies.`
+          : `Ollama unavailable. Install Ollama, then run: ollama run ${payload.model || "gemma4"}`
+      },
+      502
+    );
   }
 }
 
@@ -79,18 +83,78 @@ async function handleResearch(request, response) {
 
 async function fetchSource(url) {
   try {
-    const { stdout } = await execFileAsync("python3", [join(rootDir, "scripts", "scrapers", "web_scraper.py"), url], { timeout: 30000 });
-    const results = JSON.parse(stdout);
-    if (results && results.length > 0) {
-      return results[0];
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "FormForward/0.2 (+local research scraper)",
+        "Accept": "text/html,application/xhtml+xml"
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      return { url, ok: false, title: url, summary: `Fetch failed with status ${response.status}` };
     }
-    return { url, ok: false, title: url, summary: "No data scraped" };
+    const html = await response.text();
+    const title = extractTitle(html) || url;
+    const summary = summarizeHtml(html);
+    return {
+      url,
+      ok: !!summary,
+      title,
+      summary: summary || "No readable article text found.",
+      source_type: "web_article"
+    };
   } catch (error) {
     return { url, ok: false, title: url, summary: "Scraping failed: " + error.message };
   }
 }
 
-// extractTitle and extractSummary removed
+function extractTitle(html) {
+  return decodeHtmlEntities(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").trim();
+}
+
+function summarizeHtml(html) {
+  const description = decodeHtmlEntities(
+    html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1]
+    || html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1]
+    || ""
+  ).trim();
+
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<img[^>]*>/gi, " ")
+    .replace(/<\/(p|div|section|article|li|h1|h2|h3|h4|br)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+
+  const normalized = decodeHtmlEntities(text)
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n\s+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 45)
+    .slice(0, 8)
+    .join(" ");
+
+  const combined = [description, normalized].filter(Boolean).join(" ");
+  return combined.slice(0, 1200).trim();
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
 
 async function handlePdfScrape(request, response) {
   const { file_name, base64_data } = await readJsonBody(request, 50_000_000);
@@ -101,10 +165,13 @@ async function handlePdfScrape(request, response) {
   const tempPath = join(tmpdir(), `${randomUUID()}.pdf`);
   try {
     await writeFile(tempPath, Buffer.from(base64_data, "base64"));
-    const { stdout } = await execFileAsync("python3", [join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), tempPath], { timeout: 120000 });
-    const results = JSON.parse(stdout);
+    const results = await extractPdfText(tempPath);
     await unlink(tempPath).catch(() => {});
-    writeJson(response, { text: results.text });
+    if (!results.text) {
+      writeJson(response, { error: "No text could be extracted from this PDF.", diagnostics: results.diagnostics || [] }, 422);
+      return;
+    }
+    writeJson(response, { text: results.text, preview: results.text.slice(0, 1200), engine: results.engine, diagnostics: results.diagnostics || [] });
   } catch (error) {
     await unlink(tempPath).catch(() => {});
     writeJson(response, { error: "PDF Scraping failed: " + error.message }, 500);
@@ -135,12 +202,9 @@ async function handleAnalyzeForm(request, response) {
     const tempPath = join(tmpdir(), `${randomUUID()}.pdf`);
     try {
       await writeFile(tempPath, Buffer.from(pdf_data.base64_data, "base64"));
-      const { stdout } = await execFileAsync("python3", [
-        join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), tempPath
-      ], { timeout: 120000 });
-      const results = JSON.parse(stdout);
+      const results = await extractPdfText(tempPath);
       extractedPdfText = results.text || "";
-      pipelineStages.push({ stage: "pdf_extraction", status: "success", chars: extractedPdfText.length });
+      pipelineStages.push({ stage: "pdf_extraction", status: extractedPdfText ? "success" : "failed", chars: extractedPdfText.length, engine: results.engine, diagnostics: results.diagnostics || [] });
     } catch (err) {
       pipelineStages.push({ stage: "pdf_extraction", status: "failed", error: err.message });
     } finally {
@@ -222,40 +286,13 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
 
   pipelineStages.push({ stage: "prompt_construction", status: "success", message_length: userContent.length });
 
-  // ──── Stage 3: Send to Gemma 4 via Ollama ────
+  // ──── Stage 3: Send to Gemma 4 via local runtime or Ollama ────
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
-    const ollamaResponse = await fetch("http://127.0.0.1:11434/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: modelName,
-        messages,
-        stream: false,
-        format: "json",
-        options: { temperature: 0.15, num_predict: 800 }
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
+    const rawResult = payload.local_model_path
+      ? await runLocalGemma({ model: modelName, local_model_path: payload.local_model_path, messages, stream: false, format: "json", options: { temperature: 0.15, num_predict: 800 } })
+      : await runOllamaChat({ model: modelName, messages, stream: false, format: "json", options: { temperature: 0.15, num_predict: 800 } }, 90000);
 
-    const text = await ollamaResponse.text();
-    if (!ollamaResponse.ok) {
-      pipelineStages.push({ stage: "gemma_generation", status: "failed", error: `Ollama ${ollamaResponse.status}` });
-      writeJson(response, { pipeline: pipelineStages, error: `Ollama returned ${ollamaResponse.status}` }, 502);
-      return;
-    }
-
-    // Parse the Ollama response (NDJSON format)
-    let gemmaContent = "";
-    for (const line of text.split("\n").filter(Boolean)) {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.message?.content) gemmaContent += parsed.message.content;
-        else if (parsed.response) gemmaContent += parsed.response;
-      } catch { /* skip malformed lines */ }
-    }
+    const gemmaContent = rawResult.message?.content || rawResult.response || "";
 
     // Extract JSON from Gemma's response
     let coaching = {};
@@ -282,10 +319,92 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
     pipelineStages.push({ stage: "gemma_generation", status: "failed", error: err.message });
     writeJson(response, {
       pipeline: pipelineStages,
-      error: `Gemma unavailable. Run: ollama run ${modelName}`,
+      error: payload.local_model_path
+        ? `Local Gemma unavailable. Configure a repo-local model directory and Python transformers runtime.`
+        : `Gemma unavailable. Run: ollama run ${modelName}`,
       pdf_text_preview: extractedPdfText.substring(0, 500) || null
     }, 502);
   }
+}
+
+async function extractPdfText(pdfPath) {
+  const diagnostics = [];
+
+  try {
+    const { stdout } = await execFileAsync("python3", [join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), pdfPath], { timeout: 120000 });
+    const parsed = JSON.parse(stdout || "{}");
+    if (parsed.error) diagnostics.push(`PaddleOCR: ${parsed.error}`);
+    if (parsed.text) return { text: parsed.text, engine: "PaddleOCR", diagnostics };
+  } catch (error) {
+    diagnostics.push(`PaddleOCR: ${error.message}`);
+  }
+
+  try {
+    const { stdout } = await execFileAsync("mdls", ["-raw", "-name", "kMDItemTextContent", pdfPath], { timeout: 15000 });
+    const text = String(stdout || "").trim();
+    if (text && text !== "(null)") return { text, engine: "Spotlight metadata", diagnostics };
+    diagnostics.push("Spotlight metadata: no text content found");
+  } catch (error) {
+    diagnostics.push(`Spotlight metadata: ${error.message}`);
+  }
+
+  try {
+    const { stdout } = await execFileAsync("strings", ["-n", "8", pdfPath], { timeout: 15000 });
+    const lines = String(stdout || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /[A-Za-z]{3,}/.test(line))
+      .slice(0, 400);
+    if (lines.length) return { text: lines.join("\n"), engine: "strings fallback", diagnostics };
+    diagnostics.push("strings fallback: no readable text found");
+  } catch (error) {
+    diagnostics.push(`strings fallback: ${error.message}`);
+  }
+
+  return { text: "", engine: "none", diagnostics };
+}
+
+async function runOllamaChat(payload, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const ollamaResponse = await fetch("http://127.0.0.1:11434/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const text = await ollamaResponse.text();
+    if (!ollamaResponse.ok) throw new Error(`Ollama returned ${ollamaResponse.status}`);
+    return parseModelResponse(text);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function runLocalGemma(payload) {
+  const { stdout } = await execFileAsync(
+    "python3",
+    [join(rootDir, "scripts", "local_gemma_runner.py"), JSON.stringify(payload)],
+    { timeout: 120000, maxBuffer: 16_000_000 }
+  );
+  const parsed = JSON.parse(stdout || "{}");
+  if (parsed.error) throw new Error(parsed.error);
+  return parsed;
+}
+
+function parseModelResponse(text) {
+  let combined = "";
+  for (const line of String(text).split("\n").filter(Boolean)) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.message?.content) combined += parsed.message.content;
+      else if (parsed.response) combined += parsed.response;
+    } catch {
+      combined += line;
+    }
+  }
+  return { message: { content: combined || String(text).trim() } };
 }
 
 function readJsonBody(request, maxBytes = 1_000_000) {

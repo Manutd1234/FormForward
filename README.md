@@ -12,9 +12,9 @@ FormForward is an AI-powered running form analysis platform that combines:
 
 - **Wearable data analysis** (Garmin CSV/GPX imports)
 - **Computer vision pose estimation** (MediaPipe 33-point skeleton detection)
-- **Research paper extraction** (PaddleOCR for biomechanical PDFs)
+- **Research paper extraction** (PDF preview + multi-step local extraction with PaddleOCR fallback)
 - **Web scraping** (Scrapy-powered article ingestion)
-- **LLM coaching** (Gemma 4 via Ollama — fully local inference)
+- **LLM coaching** (Gemma 4 via Ollama or a repository-local Hugging Face model path)
 
 All processing happens **locally on your machine** — your data never leaves your device.
 
@@ -45,7 +45,8 @@ One click produces:
 |------|---------|---------|
 | Node.js | 20+ | Backend server |
 | Python | 3.10+ | PDF scraping (PaddleOCR) |
-| Ollama | Latest | Local Gemma 4 inference |
+| Ollama | Latest | Local Gemma 4 inference, optional |
+| Torch + Transformers | Current | Repository-local Gemma runner, optional |
 
 ### 1. Install dependencies
 
@@ -55,6 +56,9 @@ npm install
 
 # Python dependencies (for PDF analysis)
 pip install paddleocr pdf2image
+
+# Optional repository-local Gemma runtime
+pip install torch transformers
 
 # Install Gemma 4 model
 ollama pull gemma4:latest
@@ -86,7 +90,12 @@ Navigate to [http://localhost:5173](http://localhost:5173)
 
 ### Research Ingestion
 - Paste URLs to scrape running form articles
-- Upload biomechanical research PDFs for PaddleOCR extraction
+- Upload biomechanical research PDFs for inline preview and local text extraction
+
+### Repository-local Gemma
+- Use the **Repository-local provider** field on the AI Coach tab
+- Point it to a downloaded Gemma model directory such as `./local-models/gemma4`
+- This removes the runtime dependency on Ollama, but you still need to download the model weights separately
 
 ### Full Pipeline
 1. Upload a PDF (optional) in the Research tab
@@ -114,6 +123,8 @@ Rockathon-2026/
 │   └── scrapers/
 │       ├── pdf_scraper.py   # PaddleOCR PDF text extraction
 │       └── web_scraper.py   # Scrapy web article scraper
+├── local-models/
+│   └── README.md            # How to point the app at a repo-local Gemma model
 ├── data/                    # Data directory for processed outputs
 └── formforward_app/         # Flutter companion app (iOS/Android)
 ```
@@ -125,7 +136,7 @@ Rockathon-2026/
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/analyze-form` | POST | **Unified pipeline**: PDF → Gemma 4 → form output |
-| `/api/gemma` | POST | Direct Ollama/Gemma proxy |
+| `/api/gemma` | POST | Direct Gemma proxy (Ollama or repo-local runner) |
 | `/api/research` | POST | Web URL scraping |
 | `/api/scrape-pdf` | POST | Standalone PDF OCR extraction |
 

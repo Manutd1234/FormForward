@@ -18,6 +18,8 @@ const DEFAULT_RESEARCH_URLS = [
   "https://docs.ollama.com/capabilities/vision",
   "https://ai.google.dev/gemma/docs/capabilities/vision/video-understanding"
 ].join("\n");
+const PDFJS_CDN = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs";
+const PDFJS_WORKER_CDN = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs";
 const SAMPLE_CSV = `time,cadence,vertical_oscillation_mm,ground_contact_time_ms,stride_length_m,pace,heart_rate,elevation,gct_balance
 0:00,178,78,232,0.95,5:17,142,22,50.2
 1:00,178,78,231,0.96,5:14,145,23,50.3
@@ -40,10 +42,24 @@ const state = {
   analysis: null,
   sourceName: "Sample CSV run",
   video: { name: "", previewUrl: "", frames: [], status: "No video loaded" },
-  research: { sources: [], status: "Idle", running: false },
+  pdf: { name: "", previewUrl: "", extractPreview: "", status: "No PDF selected", diagnostics: [] },
+  backend: { healthy: null, label: "Checking", detail: "Research endpoints are being checked." },
+  research: { sources: [], status: "Idle", running: false, manualSources: [] },
   gemma: { status: "Idle", output: null, error: null, running: false },
-  vision: { ready: false, frameAnalyses: [], status: "Initializing" }
+  vision: {
+    ready: false,
+    frameAnalyses: [],
+    status: "Initializing",
+    liveMode: false,
+    liveLoopId: null,
+    liveCooldownUntil: 0,
+    lastLiveFrameAt: 0,
+    liveLatest: null,
+    liveGemma: { status: "Waiting for live data", narrative: "", running: false, error: null, lastUpdated: null }
+  }
 };
+
+let pdfjsLibPromise = null;
 
 const el = {
   tabBar: qs("#tabBar"),
@@ -68,8 +84,21 @@ const el = {
   researchButton: qs("#researchButton"),
   researchStatus: qs("#researchStatus"),
   researchList: qs("#researchList"),
+  backendStatusBadge: qs("#backendStatusBadge"),
+  backendStatusText: qs("#backendStatusText"),
+  pdfEngineLabel: qs("#pdfEngineLabel"),
+  urlScrapeState: qs("#urlScrapeState"),
+  pdfState: qs("#pdfState"),
+  manualSourceTitle: qs("#manualSourceTitle"),
+  manualSourceUrl: qs("#manualSourceUrl"),
+  manualSourceSummary: qs("#manualSourceSummary"),
+  composerCharCount: qs("#composerCharCount"),
+  addManualSourceButton: qs("#addManualSourceButton"),
+  clearAllSourcesButton: qs("#clearAllSourcesButton"),
+  sourceCountBadge: qs("#sourceCountBadge"),
   generateGemmaButton: qs("#generateGemmaButton"),
   gemmaModelInput: qs("#gemmaModelInput"),
+  localGemmaPathInput: qs("#localGemmaPathInput"),
   gemmaStatus: qs("#gemmaStatus"),
   gemmaOutput: qs("#gemmaOutput"),
   coachList: qs("#coachList"),
@@ -88,8 +117,19 @@ const el = {
   assessmentPanel: qs("#assessmentPanel"),
   formScoreBadge: qs("#formScoreBadge"),
   assessmentColumns: qs("#assessmentColumns"),
+  liveScoreChip: qs("#liveScoreChip"),
+  liveScoreRingValue: qs("#liveScoreRingValue"),
+  liveScoreCopy: qs("#liveScoreCopy"),
+  bodyPointGrid: qs("#bodyPointGrid"),
+  liveInsightList: qs("#liveInsightList"),
+  liveGemmaStatus: qs("#liveGemmaStatus"),
+  liveGemmaNarrative: qs("#liveGemmaNarrative"),
   pdfInput: qs("#pdfInput"),
   analyzePdfButton: qs("#analyzePdfButton"),
+  pdfMeta: qs("#pdfMeta"),
+  pdfPreviewShell: qs("#pdfPreviewShell"),
+  pdfPreviewFrame: qs("#pdfPreviewFrame"),
+  pdfExtractPreview: qs("#pdfExtractPreview"),
   trainDataInput: qs("#trainDataInput"),
   startTrainingButton: qs("#startTrainingButton"),
   // Optimal form panel
@@ -104,6 +144,7 @@ const el = {
 };
 
 el.gemmaModelInput.value = DEFAULT_MODEL;
+if (el.localGemmaPathInput) el.localGemmaPathInput.value = "local-models/gemma4";
 
 // Initialize vision pipeline
 initVision().then((ok) => {
@@ -125,25 +166,21 @@ el.fileInput.addEventListener("change", async ({ target }) => {
 });
 el.loadSampleButton.addEventListener("click", () => loadActivity(SAMPLE_CSV, "Sample CSV run"));
 el.loadSampleGpxButton.addEventListener("click", () => loadActivity(buildSampleGpx(), "Sample GPX run"));
-el.liveTrackingButton?.addEventListener("click", async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-    el.videoPreview.srcObject = stream;
-    el.videoPreview.hidden = false;
-    el.videoPreview.play();
-    el.videoStatus.textContent = "Live tracking active...";
-    el.analyzeVisionButton.disabled = false;
-  } catch (err) {
-    el.videoStatus.textContent = "Camera access denied or unavailable.";
-  }
-});
+el.liveTrackingButton?.addEventListener("click", toggleLiveTracking);
 el.videoInput.addEventListener("change", async ({ target }) => {
   const [file] = target.files;
   if (file) await handleVideoUpload(file);
 });
+el.pdfInput?.addEventListener("change", ({ target }) => {
+  const [file] = target.files;
+  handlePdfSelection(file || null);
+});
 el.analyzeVisionButton.addEventListener("click", runVisionAnalysis);
 el.researchButton.addEventListener("click", gatherResearch);
 el.analyzePdfButton.addEventListener("click", analyzePdf);
+el.addManualSourceButton.addEventListener("click", addManualSource);
+el.clearAllSourcesButton.addEventListener("click", clearDynamicSources);
+el.manualSourceSummary?.addEventListener("input", updateComposerCount);
 el.startTrainingButton.addEventListener("click", startTraining);
 el.runFullPipelineButton?.addEventListener("click", runFullPipeline);
 el.copyPayloadButton.addEventListener("click", async () => {
@@ -175,6 +212,9 @@ function switchTab(tabId) {
   if (tabId === "charts" && state.analysis) { renderMetricTabs(); renderChart(); }
 }
 
+initManualSources();
+refreshBackendHealth();
+updateComposerCount();
 loadActivity(SAMPLE_CSV, "Sample CSV run");
 
 function loadActivity(text, name) {
@@ -361,6 +401,8 @@ function render() {
   renderGemma();
   renderPayload();
   renderCoverage();
+  renderLiveVision();
+  renderPdf();
 }
 
 function renderSummary() {
@@ -460,6 +502,7 @@ function renderCoach() {
 }
 
 async function handleVideoUpload(file) {
+  stopLiveTracking({ preservePreview: false, silent: true });
   if (state.video.previewUrl) URL.revokeObjectURL(state.video.previewUrl);
   state.video = { name: file.name, previewUrl: URL.createObjectURL(file), frames: [], status: "Sampling frames" };
   renderVideo();
@@ -489,7 +532,7 @@ async function runVisionAnalysis() {
       return;
     }
   }
-  
+
   el.analyzeVisionButton.disabled = true;
   el.analyzeVisionButton.textContent = "Analyzing…";
   state.vision.frameAnalyses = [];
@@ -552,6 +595,10 @@ async function runVisionAnalysis() {
 
   el.analyzeVisionButton.textContent = "Re-analyze";
   el.analyzeVisionButton.disabled = false;
+  state.vision.liveLatest = withAssess.at(-1) || withAngles.at(-1) || state.vision.frameAnalyses.at(-1) || null;
+  if (state.vision.liveLatest) {
+    updateLiveStateFromAnalysis(state.vision.liveLatest, { narrative: false });
+  }
   renderPayload();
 }
 
@@ -661,15 +708,322 @@ function renderVideo() {
   el.frameStrip.innerHTML = state.video.frames.map((frame) => `<figure><img src="${frame.dataUrl}" alt="Sampled video frame at ${frame.label}" /><figcaption>${frame.label}</figcaption></figure>`).join("");
 }
 
+async function toggleLiveTracking() {
+  if (state.vision.liveMode) {
+    stopLiveTracking({ preservePreview: false });
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    stopLiveTracking({ preservePreview: true, silent: true });
+    if (state.video.previewUrl) {
+      URL.revokeObjectURL(state.video.previewUrl);
+      state.video.previewUrl = "";
+    }
+    state.video.frames = [];
+    state.video.name = "Live camera";
+    state.video.status = "Live tracking active";
+    el.videoPreview.srcObject = stream;
+    el.videoPreview.hidden = false;
+    await el.videoPreview.play();
+    state.vision.liveMode = true;
+    state.vision.liveGemma = { status: "Watching live posture", narrative: "", running: false, error: null, lastUpdated: null };
+    state.vision.frameAnalyses = [];
+    state.vision.liveLatest = null;
+    el.analyzeVisionButton.disabled = false;
+    el.liveTrackingButton.textContent = "Stop Live Tracking";
+    switchTab("video");
+    renderVideo();
+    renderLiveVision();
+    startLiveLoop();
+  } catch (err) {
+    state.video.status = "Camera access denied or unavailable.";
+    renderVideo();
+  }
+}
+
+function stopLiveTracking({ preservePreview = false, silent = false } = {}) {
+  if (state.vision.liveLoopId) {
+    cancelAnimationFrame(state.vision.liveLoopId);
+    state.vision.liveLoopId = null;
+  }
+  const stream = el.videoPreview?.srcObject;
+  if (stream && typeof stream.getTracks === "function") {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+  if (el.videoPreview) {
+    el.videoPreview.pause?.();
+    if (!preservePreview) {
+      el.videoPreview.srcObject = null;
+      el.videoPreview.hidden = !state.video.previewUrl;
+    }
+  }
+  state.vision.liveMode = false;
+  state.vision.liveCooldownUntil = 0;
+  state.vision.lastLiveFrameAt = 0;
+  el.liveTrackingButton.textContent = "Start Live Tracking";
+  if (!silent && !state.video.previewUrl) {
+    state.video.status = "Live tracking stopped";
+    renderVideo();
+  }
+}
+
+function startLiveLoop() {
+  const step = async () => {
+    if (!state.vision.liveMode) return;
+    const video = el.videoPreview;
+    const ready = video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0;
+    const enoughTime = performance.now() - state.vision.lastLiveFrameAt >= 650;
+    if (ready && enoughTime) {
+      state.vision.lastLiveFrameAt = performance.now();
+      const analysis = await analyzeCurrentVideoFrame(video);
+      if (analysis) {
+        state.vision.liveLatest = analysis;
+        state.vision.frameAnalyses = [...state.vision.frameAnalyses.slice(-7), analysis];
+        updateLiveStateFromAnalysis(analysis, { narrative: true });
+      }
+    }
+    state.vision.liveLoopId = requestAnimationFrame(step);
+  };
+  state.vision.liveLoopId = requestAnimationFrame(step);
+}
+
+async function analyzeCurrentVideoFrame(video) {
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 720 / Math.max(1, video.videoWidth));
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  const context = canvas.getContext("2d");
+  context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
+  const img = new Image();
+  img.src = dataUrl;
+  await new Promise((resolve) => { img.onload = resolve; });
+  const landmarks = visionReady() ? detectPose(img) : null;
+  const angles = landmarks ? computeAngles(landmarks) : null;
+  const assessment = angles ? assessForm(angles) : null;
+  if (landmarks) drawSkeleton(canvas, landmarks, assessment?.grades || null);
+  return {
+    label: `Live ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`,
+    landmarks,
+    angles,
+    assessment,
+    dataUrl,
+    base64: dataUrl.split(",")[1],
+    canvas
+  };
+}
+
+function updateLiveStateFromAnalysis(analysis, { narrative } = { narrative: true }) {
+  if (!analysis?.angles || !analysis?.assessment) {
+    state.vision.liveGemma.status = "Pose not detected";
+    renderLiveVision();
+    return;
+  }
+  el.poseDetectionStatus.textContent = analysis.landmarks ? "Live pose detected (33 points)" : "Searching for pose…";
+  el.angleAnalysisStatus.textContent = "Live angle stream updating";
+  el.formClassStatus.textContent = "Live form grading active";
+  renderAngleGrid([analysis]);
+  renderFormAssessment([analysis]);
+  renderLiveVision();
+  if (narrative) scheduleLiveGemmaNarrative();
+}
+
+function renderLiveVision() {
+  const live = state.vision.liveLatest;
+  const assessment = live?.assessment;
+  const score = assessment?.score;
+  const tone = !Number.isFinite(score) ? "" : score >= 75 ? "good" : score >= 50 ? "warn" : "bad";
+  el.liveScoreChip.textContent = Number.isFinite(score) ? `${score}/100` : "--/100";
+  el.liveScoreChip.className = `live-score-chip${tone ? ` ${tone}` : ""}`;
+  el.liveScoreRingValue.textContent = Number.isFinite(score) ? score : "--";
+  el.liveScoreRingValue.parentElement.style.setProperty("--ring-progress", String(Math.max(0, Math.min(100, score || 0))));
+  el.liveScoreRingValue.parentElement.style.setProperty("--ring-color", tone === "good" ? "#7ed6af" : tone === "warn" ? "#f3a12b" : "#f36b6d");
+  el.liveScoreCopy.textContent = live?.assessment
+    ? buildLiveSummary(live)
+    : "Start live tracking to compare your current running posture against the target POSE profile.";
+  el.bodyPointGrid.innerHTML = live?.assessment
+    ? buildBodyPointCards(live)
+    : `<div class="empty-state">No live body-point analysis yet.</div>`;
+  el.liveInsightList.innerHTML = live?.assessment
+    ? buildLiveInsightItems(live)
+    : `<div class="empty-state">We’ll list the joints and segments that need attention once pose landmarks are visible.</div>`;
+  const gemmaTone = state.vision.liveGemma.error ? "bad" : state.vision.liveGemma.running ? "warn" : state.vision.liveGemma.lastUpdated ? "good" : "";
+  el.liveGemmaStatus.textContent = state.vision.liveGemma.error || state.vision.liveGemma.status;
+  el.liveGemmaStatus.className = `live-gemma-status${gemmaTone ? ` ${gemmaTone}` : ""}`;
+  el.liveGemmaNarrative.textContent = state.vision.liveGemma.error || state.vision.liveGemma.narrative || "When landmarks begin streaming, Gemma will explain which body points are out of range and what to correct first.";
+}
+
+function buildLiveSummary(live) {
+  const issues = live.assessment.issues.slice(0, 2).map((issue) => typeof issue === "string" ? issue : issue.label.toLowerCase());
+  if (!issues.length) return "Your current frame is tracking close to the target profile. Keep the same rhythm and posture.";
+  return `Right now the biggest drift is around ${issues.join(" and ")}. The panel below shows which body points need the first correction.`;
+}
+
+function buildBodyPointCards(live) {
+  const profile = liveBodyProfile(live);
+  return profile.map((item) => `
+    <article class="body-point-card ${item.tone}">
+      <div class="body-point-meta">
+        <strong>${item.label}</strong>
+        <span class="body-point-grade">${item.grade}</span>
+      </div>
+      <p>${escapeHtml(item.detail)}</p>
+    </article>
+  `).join("");
+}
+
+function buildLiveInsightItems(live) {
+  const issues = live.assessment.issues;
+  if (!issues.length) {
+    return `<article class="live-insight-item good"><span class="live-insight-bullet">✓</span><div><strong>Good alignment</strong><p>No major body-point issues are showing in the current frame.</p></div></article>`;
+  }
+  return issues.slice(0, 5).map((issue) => {
+    const label = typeof issue === "string" ? issue : issue.label;
+    const recommendation = typeof issue === "string" ? "Stay relaxed and keep your foot landing under the hips." : issue.recommendation;
+    const grade = typeof issue === "string" ? "Needs Improvement" : issue.grade;
+    const tone = grade === "Bad" ? "bad" : "warn";
+    return `<article class="live-insight-item ${tone}">
+      <span class="live-insight-bullet">${tone === "bad" ? "!" : "~"}</span>
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(recommendation)}</p>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+function liveBodyProfile(live) {
+  const angles = live.angles;
+  const grades = live.assessment.grades || {};
+  return [
+    bodyPoint("Head", grades.headAngle, angles.headAngle, "Keep a neutral gaze with the chin quiet and the neck long.", 80, 110, "°"),
+    bodyPoint("Trunk", grades.trunkAngle, angles.trunkAngle, "Lean from the ankles so momentum moves forward, not down at the waist.", 5, 15, "°"),
+    bodyPoint("Arms", worstGrade([grades.leftElbow, grades.rightElbow]), avgPair(angles.leftElbow, angles.rightElbow), "Compact elbow angles keep the upper body from getting noisy.", 60, 90, "°"),
+    bodyPoint("Foot Strike", worstGrade([grades.leftHipAnkle, grades.rightHipAnkle, grades.overstride]), avgPair(angles.leftHipAnkle, angles.rightHipAnkle), "Land the foot closer to the hips to reduce braking.", 0, 15, "°"),
+    bodyPoint("Pelvis", grades.hipDrop, angles.hipDrop, "Keep the hips level through stance to avoid side-to-side collapse.", 0, 3, "%"),
+    bodyPoint("Bounce", grades.verticalOsc, angles.verticalOsc, "Reduce excess vertical motion so energy goes forward.", 0, 25, "")
+  ];
+}
+
+function bodyPoint(label, grade, value, guidance, targetLow, targetHigh, unit) {
+  const tone = grade === "Good" ? "good" : grade === "Bad" ? "bad" : "warn";
+  const measured = Number.isFinite(value) ? `${value}${unit}` : "—";
+  const target = `${targetLow}-${targetHigh}${unit}`;
+  return {
+    label,
+    grade: grade || "Waiting",
+    tone,
+    detail: `Current ${measured}. Target ${target}. ${guidance}`
+  };
+}
+
+function worstGrade(values) {
+  if (values.includes("Bad")) return "Bad";
+  if (values.includes("Needs Improvement")) return "Needs Improvement";
+  if (values.includes("Good")) return "Good";
+  return null;
+}
+
+function avgPair(a, b) {
+  return Number.isFinite(a) && Number.isFinite(b) ? round((a + b) / 2, 1) : Number.isFinite(a) ? a : Number.isFinite(b) ? b : null;
+}
+
+async function scheduleLiveGemmaNarrative() {
+  if (!state.vision.liveMode || state.vision.liveGemma.running || Date.now() < state.vision.liveCooldownUntil) return;
+  const live = state.vision.liveLatest;
+  if (!live?.angles || !live?.assessment) return;
+  state.vision.liveGemma.running = true;
+  state.vision.liveGemma.status = "Gemma 4 explaining current body points…";
+  state.vision.liveCooldownUntil = Date.now() + 5000;
+  renderLiveVision();
+
+  const prompt = {
+    task: "Explain the runner's current body-point issues in real time.",
+    live_pose: {
+      score: live.assessment.score,
+      angles: live.angles,
+      issues: live.assessment.issues.map((issue) => typeof issue === "string" ? { label: issue } : issue),
+      strengths: live.assessment.strengths.slice(0, 4)
+    },
+    desired_pose: {
+      head_angle_deg: "80-110",
+      trunk_lean_deg: "5-15",
+      elbow_angle_deg: "60-90",
+      hip_ankle_angle_deg: "0-15",
+      hip_drop_pct: "0-3",
+      vertical_osc_proxy: "0-25"
+    },
+    instruction: "Return JSON only with one field named realtime_explanation. Mention which body points are not optimal and the first correction cue."
+  };
+
+  try {
+    const response = await fetch("/api/gemma", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+        local_model_path: el.localGemmaPathInput?.value.trim() || "",
+        messages: [
+          { role: "system", content: "You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON." },
+          { role: "user", content: JSON.stringify(prompt) }
+        ],
+        stream: false,
+        format: "json",
+        options: { temperature: 0.1, num_predict: 180 }
+      })
+    });
+    const body = await response.json();
+    if (body.error) throw new Error(body.error);
+    const parsed = safeJson(body.message?.content || body.response || "{}");
+    state.vision.liveGemma = {
+      status: "Gemma 4 live explanation ready",
+      narrative: cleanGemmaField(parsed.realtime_explanation) || fallbackLiveNarrative(live),
+      running: false,
+      error: null,
+      lastUpdated: new Date().toISOString()
+    };
+  } catch (error) {
+    state.vision.liveGemma = {
+      status: "Gemma 4 live fallback",
+      narrative: fallbackLiveNarrative(live),
+      running: false,
+      error: null,
+      lastUpdated: new Date().toISOString()
+    };
+  }
+  renderLiveVision();
+}
+
+function fallbackLiveNarrative(live) {
+  const issues = live.assessment.issues
+    .slice(0, 3)
+    .map((issue) => typeof issue === "string" ? issue : `${issue.label.toLowerCase()} is off`)
+    .join(", ");
+  return issues
+    ? `Current frame suggests ${issues}. First fix: keep the foot landing under the hips and hold a small forward lean from the ankles.`
+    : "Current frame is staying close to target form. Keep the same cadence and relaxed upper body.";
+}
+
 async function gatherResearch() {
-  state.research = { ...state.research, running: true, status: "Gathering web context" };
+  state.research.running = true;
+  state.research.status = "Gathering web context...";
+  el.urlScrapeState.textContent = "Fetching";
   renderResearch();
   try {
-    const response = await fetch("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: el.researchUrls.value.split(/\n+/).map((url) => url.trim()).filter(Boolean) }) });
+    const response = await apiJson("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ urls: el.researchUrls.value.split(/\n+/).map((url) => url.trim()).filter(Boolean) }) });
     const body = await response.json();
-    state.research = { sources: body.sources || [], running: false, status: `${(body.sources || []).filter((source) => source.ok).length}/${(body.sources || []).length} sources gathered` };
+    const scraped = body.sources || [];
+    state.research.sources = [...state.research.manualSources, ...scraped];
+    state.research.running = false;
+    state.research.status = `${scraped.filter((source) => source.ok).length}/${scraped.length} web sources gathered.`;
+    state.backend = { healthy: true, label: "Online", detail: "URL scraper responded normally." };
+    el.urlScrapeState.textContent = "Complete";
   } catch (error) {
-    state.research = { sources: [], running: false, status: `Research unavailable: ${error.message}` };
+    state.research.running = false;
+    state.research.status = `Research unavailable: ${error.message}`;
+    state.backend = { healthy: false, label: "Offline", detail: error.message };
+    el.urlScrapeState.textContent = "Blocked";
   }
   renderResearch();
   renderPayload();
@@ -681,41 +1035,183 @@ async function analyzePdf() {
     window.alert("Please select a PDF document first.");
     return;
   }
-  
-  state.research = { ...state.research, running: true, status: `Analyzing ${file.name} using PaddleOCR...` };
+
+  state.research.running = true;
+  state.research.status = `Analyzing ${file.name} locally...`;
+  el.pdfState.textContent = "Extracting";
   renderResearch();
-  
+
   try {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    await new Promise(r => reader.onload = r);
-    const base64Data = reader.result.split(',')[1];
+    const localText = await extractPdfTextInBrowser(file);
+    if (localText && localText.replace(/\s+/g, " ").trim().length > 80) {
+      const preview = localText.slice(0, 1200);
+      state.pdf.extractPreview = preview;
+      state.pdf.diagnostics = ["Client-side text extraction", `Characters: ${localText.length}`];
+      state.pdf.status = "Analyzed with Browser PDF.js";
+      state.backend = { healthy: true, label: "Online", detail: "PDF was parsed locally in the browser." };
+      el.pdfState.textContent = "Browser PDF.js";
+      upsertResearchSource({
+        url: file.name,
+        ok: true,
+        title: `PDF Document: ${file.name}`,
+        summary: localText,
+        source_type: "pdf_browser"
+      });
+    } else {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      await new Promise(r => reader.onload = r);
+      const base64Data = reader.result.split(',')[1];
 
-    const response = await fetch("/api/scrape-pdf", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ file_name: file.name, base64_data: base64Data })
-    });
-    
-    const body = await response.json();
-    if (body.error) throw new Error(body.error);
+      const response = await apiJson("/api/scrape-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_name: file.name, base64_data: base64Data })
+      });
 
-    const newSource = {
-      url: file.name,
-      ok: true,
-      title: `PDF Document: ${file.name}`,
-      summary: body.text || "Extracted biomechanical form data from PDF using PaddleOCR. Text is ready for ML ingestion."
-    };
+      const body = await response.json();
+      if (body.error) throw new Error(body.error);
 
-    state.research = {
-      sources: [...state.research.sources, newSource],
-      running: false,
-      status: `Collated ${state.research.sources.length + 1} sources for training.`
-    };
+      state.pdf.extractPreview = body.preview || body.text?.slice(0, 1200) || "No text extracted.";
+      state.pdf.diagnostics = body.diagnostics || [];
+      state.pdf.status = body.engine ? `Analyzed with ${body.engine}` : "PDF analyzed";
+      state.backend = { healthy: true, label: "Online", detail: "PDF extraction endpoint responded normally." };
+      el.pdfState.textContent = body.engine || "Complete";
+      upsertResearchSource({
+        url: file.name,
+        ok: true,
+        title: `PDF Document: ${file.name}`,
+        summary: body.text || "Extracted biomechanical form data from PDF. Text is ready for ML ingestion.",
+        source_type: "pdf_backend"
+      });
+    }
+
+    state.research.running = false;
+    state.research.status = `Collated ${state.research.sources.length} sources for training.`;
   } catch (error) {
-    state.research = { ...state.research, running: false, status: `PDF scraping failed: ${error.message}` };
+    state.research.running = false;
+    state.research.status = `PDF scraping failed: ${error.message}`;
+    state.pdf.status = `PDF analysis failed: ${error.message}`;
+    state.pdf.extractPreview = "We couldn't extract text from this PDF with the available local tools.";
+    state.pdf.diagnostics = [];
+    state.backend = { healthy: false, label: "Offline", detail: error.message };
+    el.pdfState.textContent = "Blocked";
+  }
+
+  renderPdf();
+  renderResearch();
+  renderPayload();
+}
+
+function upsertResearchSource(source) {
+  const matchIndex = state.research.sources.findIndex((item) => item.url === source.url && item.title === source.title);
+  if (matchIndex >= 0) state.research.sources[matchIndex] = source;
+  else state.research.sources.push(source);
+}
+
+function handlePdfSelection(file) {
+  if (state.pdf.previewUrl) URL.revokeObjectURL(state.pdf.previewUrl);
+  if (!file) {
+    state.pdf = { name: "", previewUrl: "", extractPreview: "", status: "No PDF selected", diagnostics: [] };
+    renderPdf();
+    return;
+  }
+  state.pdf = {
+    name: file.name,
+    previewUrl: URL.createObjectURL(file),
+    extractPreview: "",
+    status: `${file.name} loaded. Press Analyze to extract text.`,
+    diagnostics: [`Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`]
+  };
+  el.pdfState.textContent = "Ready";
+  renderPdf();
+}
+
+function renderPdf() {
+  if (el.pdfMeta) {
+    const diagnostics = state.pdf.diagnostics.length ? ` • ${state.pdf.diagnostics.join(" • ")}` : "";
+    el.pdfMeta.textContent = `${state.pdf.status}${diagnostics}`;
+  }
+  if (el.pdfPreviewShell && el.pdfPreviewFrame) {
+    el.pdfPreviewShell.hidden = !state.pdf.previewUrl;
+    if (state.pdf.previewUrl && el.pdfPreviewFrame.src !== state.pdf.previewUrl) {
+      el.pdfPreviewFrame.src = state.pdf.previewUrl;
+    }
+  }
+  if (el.pdfExtractPreview) {
+    el.pdfExtractPreview.textContent = state.pdf.extractPreview || "Extracted text preview will appear here after analysis.";
+  }
+  if (el.pdfEngineLabel) {
+    el.pdfEngineLabel.textContent = state.pdf.status.startsWith("Analyzed with ") ? state.pdf.status.replace("Analyzed with ", "") : (state.pdf.name ? el.pdfState.textContent || "Pending" : "Idle");
+  }
+}
+
+function initManualSources() {
+  try {
+    const stored = localStorage.getItem("ff_manual_sources");
+    state.research.manualSources = stored ? JSON.parse(stored) : [];
+  } catch (e) {
+    state.research.manualSources = [];
+  }
+  state.research.sources = [...state.research.manualSources];
+}
+
+function addManualSource() {
+  const title = el.manualSourceTitle.value.trim();
+  const url = el.manualSourceUrl.value.trim();
+  const summary = el.manualSourceSummary.value.trim();
+  
+  if (!title || !summary) {
+    window.alert("Please provide both a Title and Content/Summary for the manual source.");
+    return;
   }
   
+  const newSource = {
+    url: url || "Browser Stored",
+    ok: true,
+    title: title,
+    summary: summary,
+    isManual: true
+  };
+  
+  state.research.manualSources.push(newSource);
+  localStorage.setItem("ff_manual_sources", JSON.stringify(state.research.manualSources));
+  
+  // Clear inputs
+  el.manualSourceTitle.value = "";
+  el.manualSourceUrl.value = "";
+  el.manualSourceSummary.value = "";
+  
+  remergeSources();
+  state.research.status = `Stored "${title}" in browser storage.`;
+  renderResearch();
+  renderPayload();
+}
+
+function deleteManualSource(idx) {
+  const sourceToDelete = state.research.sources[idx];
+  if (!sourceToDelete || !sourceToDelete.isManual) return;
+  
+  state.research.manualSources = state.research.manualSources.filter(
+    (s) => !(s.title === sourceToDelete.title && s.url === sourceToDelete.url)
+  );
+  
+  localStorage.setItem("ff_manual_sources", JSON.stringify(state.research.manualSources));
+  
+  remergeSources();
+  state.research.status = `Removed "${sourceToDelete.title}" from browser storage.`;
+  renderResearch();
+  renderPayload();
+}
+
+function remergeSources() {
+  const scraped = state.research.sources.filter((s) => !s.isManual);
+  state.research.sources = [...state.research.manualSources, ...scraped];
+}
+
+function clearDynamicSources() {
+  state.research.sources = [...state.research.manualSources];
+  state.research.status = "Dynamic scraped sources cleared.";
   renderResearch();
   renderPayload();
 }
@@ -775,7 +1271,8 @@ async function runFullPipeline() {
     run_analysis: state.analysis?.gemmaPayload || null,
     research_sources: state.research.sources,
     cv_analysis: visionData,
-    model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL
+    model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+    local_model_path: el.localGemmaPathInput?.value.trim() || ""
   };
 
   badge.querySelector("span:last-child").textContent = "Querying Gemma 4…";
@@ -910,8 +1407,131 @@ function renderOptimalFormOutput(coaching, pipelineResult) {
 function renderResearch() {
   el.researchStatus.textContent = state.research.status;
   el.researchButton.disabled = state.research.running;
-  el.researchButton.textContent = state.research.running ? "Gathering" : "Gather";
-  el.researchList.innerHTML = state.research.sources.map((source) => `<article class="research-item ${source.ok ? "" : "muted"}"><strong>${escapeHtml(source.title || source.url)}</strong><a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(compactUrl(source.url))}</a><p>${escapeHtml(source.summary || "")}</p></article>`).join("");
+  el.researchButton.textContent = state.research.running ? "Scraping..." : "Scrape URLs";
+  if (el.backendStatusText) el.backendStatusText.textContent = state.backend.label;
+  if (el.backendStatusBadge) {
+    el.backendStatusBadge.textContent = state.backend.healthy == null ? "Backend checking…" : state.backend.healthy ? "Backend online" : "Backend offline";
+    el.backendStatusBadge.className = `research-status-chip${state.backend.healthy == null ? "" : state.backend.healthy ? " good" : " bad"}`;
+  }
+  
+  if (el.sourceCountBadge) {
+    el.sourceCountBadge.textContent = state.research.sources.length;
+  }
+  if (el.urlScrapeState && !state.research.running && el.urlScrapeState.textContent === "Fetching") el.urlScrapeState.textContent = "Ready";
+  
+  el.researchList.innerHTML = state.research.sources.map((source, index) => {
+    const isManual = !!source.isManual;
+    const badge = isManual 
+      ? `<span style="display:inline-block; font-size:0.68rem; padding:2px 6px; border-radius:4px; background:rgba(0,229,255,0.15); color:var(--accent); font-weight:900; margin-bottom:6px;">💻 Browser Stored</span>`
+      : source.source_type === "pdf_browser"
+        ? `<span style="display:inline-block; font-size:0.68rem; padding:2px 6px; border-radius:4px; background:rgba(126,214,175,0.14); color:#7ed6af; font-weight:900; margin-bottom:6px;">📄 Browser PDF.js</span>`
+        : source.source_type === "pdf_backend"
+          ? `<span style="display:inline-block; font-size:0.68rem; padding:2px 6px; border-radius:4px; background:rgba(243,161,43,0.14); color:var(--amber); font-weight:900; margin-bottom:6px;">🧪 Backend fallback</span>`
+          : `<span style="display:inline-block; font-size:0.68rem; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,0.08); color:var(--muted); font-weight:800; margin-bottom:6px;">🌐 Local Web Extract</span>`;
+      
+    const deleteBtn = isManual 
+      ? `<button type="button" class="delete-source-btn" data-index="${index}" style="min-height:24px; padding:0 8px; font-size:0.72rem; background:rgba(255,51,102,0.1); border:1px solid rgba(255,51,102,0.2); color:#ff9b83; cursor:pointer; float:right; border-radius:4px;">Delete</button>`
+      : "";
+      
+    return `<article class="research-item ${source.ok ? "" : "muted"}" style="position:relative; overflow:hidden;">
+      ${deleteBtn}
+      <div style="display:flex; flex-direction:column; gap:4px; margin-top:2px;">
+        ${badge}
+        <strong>${escapeHtml(source.title || source.url)}</strong>
+        <a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer" style="font-size:0.78rem; word-break:break-all;">${escapeHtml(compactUrl(source.url))}</a>
+        <p style="white-space:pre-wrap; margin-top:8px; line-height:1.4;">${escapeHtml(source.summary || "")}</p>
+      </div>
+    </article>`;
+  }).join("");
+  
+  // Attach event listeners to delete buttons
+  el.researchList.querySelectorAll(".delete-source-btn").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      const idx = parseInt(e.target.dataset.index, 10);
+      deleteManualSource(idx);
+    });
+  });
+}
+
+function updateComposerCount() {
+  if (!el.composerCharCount || !el.manualSourceSummary) return;
+  const count = el.manualSourceSummary.value.trim().length;
+  el.composerCharCount.textContent = `${count} chars`;
+}
+
+async function refreshBackendHealth() {
+  try {
+    const response = await apiJson("/api/health", { method: "GET" }, 1, 5000);
+    const body = await response.json();
+    state.backend = {
+      healthy: !!body.ok,
+      label: body.ok ? "Online" : "Offline",
+      detail: body.ok ? "Local API is ready for scraping and PDF extraction." : "Local API is unavailable."
+    };
+  } catch (error) {
+    state.backend = { healthy: false, label: "Offline", detail: error.message };
+  }
+  renderResearch();
+}
+
+async function loadPdfJs() {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = import(PDFJS_CDN).then((module) => {
+      const lib = module.default || module;
+      if (lib.GlobalWorkerOptions) lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+      return lib;
+    });
+  }
+  return pdfjsLibPromise;
+}
+
+async function extractPdfTextInBrowser(file) {
+  const pdfjs = await loadPdfJs();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const doc = await pdfjs.getDocument({ data }).promise;
+  const chunks = [];
+  for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+    const page = await doc.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item) => item.str || "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (pageText) chunks.push(`Page ${pageNumber}: ${pageText}`);
+  }
+  return chunks.join("\n\n");
+}
+
+async function apiJson(path, options = {}, retries = 1, timeoutMs = 15000) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(path, { ...options, signal: controller.signal });
+      clearTimeout(timeout);
+      if (!response.ok) {
+        let message = `${response.status} ${response.statusText}`;
+        try {
+          const body = await response.clone().json();
+          if (body.error) message = body.error;
+        } catch {}
+        throw new Error(message);
+      }
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+  }
+  if (lastError?.name === "AbortError") {
+    throw new Error("The local backend timed out. Restart the dev server and try again.");
+  }
+  throw new Error(lastError?.message?.includes("Failed to fetch")
+    ? "The local backend is not reachable. Restart the dev server at http://localhost:5173."
+    : lastError?.message || "Unknown backend error.");
 }
 
 async function generateGemma() {
@@ -925,7 +1545,7 @@ async function generateGemma() {
     const response = await fetch("/api/gemma", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL, messages: [{ role: "system", content: system }, userMessage], stream: false, format: "json", options: { temperature: 0.2, num_predict: 420 } })
+      body: JSON.stringify({ model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL, local_model_path: el.localGemmaPathInput?.value.trim() || "", messages: [{ role: "system", content: system }, userMessage], stream: false, format: "json", options: { temperature: 0.2, num_predict: 420 } })
     });
     const body = await response.json();
     if (body.error) throw new Error(body.error);
@@ -964,6 +1584,16 @@ function normalizeGemmaOutput(raw) {
     visual_observations: cleanGemmaField(parsed.visual_observations || parsed.visualObservations || parsed.video || parsed.video_observations),
     research_notes: cleanGemmaField(parsed.research_notes || parsed.researchNotes || parsed.research || parsed.source_notes)
   };
+}
+
+function safeJson(raw) {
+  try {
+    const text = String(raw).trim();
+    const jsonText = text.startsWith("{") ? text : text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+    return JSON.parse(jsonText);
+  } catch {
+    return {};
+  }
 }
 
 function cleanGemmaField(value) {
