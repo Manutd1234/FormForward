@@ -7,6 +7,7 @@
     <meta name="description" content="AI-powered running form analysis. Upload your activity data and get coaching insights powered by local Gemma AI." />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ff9b83'/%3E%3Ccircle cx='38' cy='14' r='5.5' fill='%23231b18'/%3E%3Cpath d='M22 52l8-16 6 8 10-20M28 36l-8 4M36 24l8 2' fill='none' stroke='%23231b18' stroke-width='4.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="./src/styles.css" />
+    <link rel="stylesheet" href="./src/gamified-theme.css" />
   </head>
   <body>
     <main class="app-shell">
@@ -20,11 +21,50 @@
             </div>
           </div>
         </div>
+        <div class="player-stats">
+          <div class="level-badge" id="playerLevelBadge">1</div>
+          <div class="xp-container">
+            <div class="xp-labels">
+              <span>Novice Runner</span>
+              <span id="playerXpLabel">0 / 100 XP</span>
+            </div>
+            <div class="xp-track">
+              <div class="xp-fill" id="playerXpFill" style="width: 0%;"></div>
+            </div>
+          </div>
         </div>
       </header>
 
       <!-- ═══════════ TAB: Dashboard ═══════════ -->
       <section class="tab-pane active" data-pane="dashboard" id="pane-dashboard">
+        
+        <!-- Achievements Strip -->
+        <section class="panel achievements-panel" style="margin-bottom: 24px; padding: 16px;">
+          <h3 style="margin-top: 0;">🏆 Recent Achievements</h3>
+          <div class="achievements-row" id="achievementsRow">
+            <div class="achievement-badge unlocked" title="First Run Logged">
+              <div class="achievement-icon">🏃</div>
+              <span class="achievement-title">First Run</span>
+            </div>
+            <div class="achievement-badge" id="badge-video" title="First Video Analyzed">
+              <div class="achievement-icon">🎥</div>
+              <span class="achievement-title">Visionary</span>
+            </div>
+            <div class="achievement-badge" id="badge-gemma" title="First Gemma 4 Coach Session">
+              <div class="achievement-icon">🤖</div>
+              <span class="achievement-title">Gemma's Pupil</span>
+            </div>
+            <div class="achievement-badge" id="badge-pdf" title="First Research PDF Loaded">
+              <div class="achievement-icon">📄</div>
+              <span class="achievement-title">Scholar</span>
+            </div>
+            <div class="achievement-badge" id="badge-perfect" title="Perfect Form Score">
+              <div class="achievement-icon">⭐</div>
+              <span class="achievement-title">Flawless Form</span>
+            </div>
+          </div>
+        </section>
+
         <section class="panel upload-panel" style="margin-bottom: 24px; padding: 16px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 12px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px;">
           <div>
             <h2 style="font-size: 1.2rem; color: var(--accent);">Upload Activity Data</h2>
@@ -38,6 +78,33 @@
             <button id="loadSampleButton" type="button">Sample CSV</button>
             <button id="loadSampleGpxButton" type="button">Sample GPX</button>
           </div>
+        </section>
+        <section class="garmin-bridge">
+          <article class="panel garmin-bridge-panel">
+            <div class="section-header">
+              <div>
+                <p class="eyebrow">Garmin integration</p>
+                <h2>Watch Data Paths</h2>
+              </div>
+            </div>
+            <div class="garmin-path-grid">
+              <article class="garmin-path-card good">
+                <span class="garmin-path-pill">Works now</span>
+                <h3>Garmin Connect exports</h3>
+                <p>Import GPX or CSV exports from Garmin Connect directly into FormForward for post-run analysis.</p>
+              </article>
+              <article class="garmin-path-card warn">
+                <span class="garmin-path-pill">Official cloud sync</span>
+                <h3>Garmin Connect Developer Program</h3>
+                <p>Direct account-level sync belongs on Garmin’s cloud-to-cloud API track rather than a browser-only watch pairing flow.</p>
+              </article>
+              <article class="garmin-path-card info">
+                <span class="garmin-path-pill">Real-time wearable stream</span>
+                <h3>Garmin Health SDKs</h3>
+                <p>Live watch sensor streaming is a mobile SDK path for approved partners. This web build uses browser camera plus GPS today.</p>
+              </article>
+            </div>
+          </article>
         </section>
         <section class="hero-grid">
           <article class="hero-card">
@@ -246,7 +313,7 @@
               <button id="analyzeVisionButton" type="button" disabled>Analyze Pose</button>
             </div>
           </div>
-          <video id="videoPreview" controls muted playsinline hidden></video>
+          <video id="videoPreview" controls autoplay muted playsinline hidden></video>
           <div class="evidence-status" id="videoStatus">No video loaded</div>
           <div class="frame-strip" id="frameStrip"></div>
         </article>
@@ -286,6 +353,38 @@
             </div>
           </article>
         </section>
+
+        <article class="panel gps-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Live geolocation</p>
+              <h2>Route + Pace Feed</h2>
+            </div>
+            <div class="live-gemma-status" id="gpsStatusChip">GPS idle</div>
+          </div>
+          <div class="gps-stat-grid">
+            <div class="gps-stat-card">
+              <span>Distance</span>
+              <strong id="gpsDistanceValue">0.00 km</strong>
+            </div>
+            <div class="gps-stat-card">
+              <span>Avg pace</span>
+              <strong id="gpsPaceValue">—</strong>
+            </div>
+            <div class="gps-stat-card">
+              <span>Accuracy</span>
+              <strong id="gpsAccuracyValue">—</strong>
+            </div>
+            <div class="gps-stat-card">
+              <span>Fixes</span>
+              <strong id="gpsFixValue">0</strong>
+            </div>
+          </div>
+          <div class="gps-route-preview" id="gpsRoutePreview">
+            <div class="empty-state">Your live route will appear here once GPS fixes start arriving.</div>
+          </div>
+          <p class="gps-coords" id="gpsCoords">Start live tracking in Chrome to collect route points.</p>
+        </article>
 
         <!-- CV Pipeline Status -->
         <div class="cv-pipeline-strip" id="cvPipelineStrip">
@@ -578,18 +677,18 @@
             </div>
             <div class="gemma-runner">
               <div>
-                <h3>Local Gemma</h3>
+                <h3>Repository-local Gemma 4</h3>
                 <p id="gemmaStatus">Idle</p>
               </div>
               <div class="gemma-controls">
-                <input id="gemmaModelInput" aria-label="Ollama model" />
+                <input id="gemmaModelInput" aria-label="Gemma model label" />
                 <button id="generateGemmaButton" type="button">Generate</button>
               </div>
             </div>
             <div class="gemma-runner" style="margin-top:-2px;">
               <div>
-                <h3>Repository-local provider</h3>
-                <p>Optional: point FormForward to a local Gemma checkout instead of Ollama.</p>
+                <h3>Model directory</h3>
+                <p>FormForward now uses the repo-local Gemma runtime by default. Adjust the model path only if your weights live somewhere else.</p>
               </div>
               <div class="gemma-controls">
                 <input id="localGemmaPathInput" aria-label="Local Gemma path" placeholder="./local-models/gemma4" />

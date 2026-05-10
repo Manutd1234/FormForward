@@ -15,7 +15,6 @@ const DEFAULT_MODEL = "gemma4:latest";
 const DEFAULT_RESEARCH_URLS = [
   "https://posemethod.com/running/",
   "https://www8.garmin.com/manuals/webhelp/GUID-0221611A-992D-495E-8DED-1DD448F7A066/EN-US/GUID-62A09512-518A-424A-8491-FE2B80CD2091.html",
-  "https://docs.ollama.com/capabilities/vision",
   "https://ai.google.dev/gemma/docs/capabilities/vision/video-understanding"
 ].join("\n");
 const PDFJS_CDN = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs";
@@ -46,6 +45,17 @@ const state = {
   backend: { healthy: null, label: "Checking", detail: "Research endpoints are being checked." },
   research: { sources: [], status: "Idle", running: false, manualSources: [] },
   gemma: { status: "Idle", output: null, error: null, running: false },
+  gps: {
+    supported: typeof navigator !== "undefined" && "geolocation" in navigator,
+    tracking: false,
+    watchId: null,
+    startedAt: null,
+    points: [],
+    distanceMeters: 0,
+    status: "GPS idle",
+    error: null,
+    lastFix: null
+  },
   vision: {
     ready: false,
     frameAnalyses: [],
@@ -56,6 +66,17 @@ const state = {
     lastLiveFrameAt: 0,
     liveLatest: null,
     liveGemma: { status: "Waiting for live data", narrative: "", running: false, error: null, lastUpdated: null }
+  },
+  player: {
+    level: 1,
+    xp: 0,
+    nextLevelXp: 100,
+    achievements: {
+      "badge-video": false,
+      "badge-gemma": false,
+      "badge-pdf": false,
+      "badge-perfect": false
+    }
   }
 };
 
@@ -124,6 +145,13 @@ const el = {
   liveInsightList: qs("#liveInsightList"),
   liveGemmaStatus: qs("#liveGemmaStatus"),
   liveGemmaNarrative: qs("#liveGemmaNarrative"),
+  gpsStatusChip: qs("#gpsStatusChip"),
+  gpsDistanceValue: qs("#gpsDistanceValue"),
+  gpsPaceValue: qs("#gpsPaceValue"),
+  gpsAccuracyValue: qs("#gpsAccuracyValue"),
+  gpsFixValue: qs("#gpsFixValue"),
+  gpsCoords: qs("#gpsCoords"),
+  gpsRoutePreview: qs("#gpsRoutePreview"),
   pdfInput: qs("#pdfInput"),
   analyzePdfButton: qs("#analyzePdfButton"),
   pdfMeta: qs("#pdfMeta"),
@@ -140,7 +168,11 @@ const el = {
   adjustmentList: qs("#adjustmentList"),
   adjustmentSource: qs("#adjustmentSource"),
   pipelineBadge: qs("#pipelineBadge"),
-  runFullPipelineButton: qs("#runFullPipelineButton")
+  runFullPipelineButton: qs("#runFullPipelineButton"),
+  // Gamification
+  playerLevelBadge: qs("#playerLevelBadge"),
+  playerXpLabel: qs("#playerXpLabel"),
+  playerXpFill: qs("#playerXpFill")
 };
 
 el.gemmaModelInput.value = DEFAULT_MODEL;
@@ -402,11 +434,54 @@ function render() {
   renderPayload();
   renderCoverage();
   renderLiveVision();
+  renderGps();
   renderPdf();
+  renderPlayer();
+}
+
+function renderPlayer() {
+  if (el.playerLevelBadge) el.playerLevelBadge.textContent = state.player.level;
+  if (el.playerXpLabel) el.playerXpLabel.textContent = `${Math.round(state.player.xp)} / ${state.player.nextLevelXp} XP`;
+  if (el.playerXpFill) el.playerXpFill.style.width = `${Math.min(100, (state.player.xp / state.player.nextLevelXp) * 100)}%`;
+  
+  Object.keys(state.player.achievements).forEach(id => {
+    const badge = qs(`#${id}`);
+    if (badge) {
+      if (state.player.achievements[id]) {
+        badge.classList.add("unlocked");
+      } else {
+        badge.classList.remove("unlocked");
+      }
+    }
+  });
+}
+
+function gainXp(amount) {
+  state.player.xp += amount;
+  if (state.player.xp >= state.player.nextLevelXp) {
+    state.player.level += 1;
+    state.player.xp -= state.player.nextLevelXp;
+    state.player.nextLevelXp = Math.floor(state.player.nextLevelXp * 1.5);
+    // Simple level up animation
+    if (el.playerLevelBadge) {
+      el.playerLevelBadge.style.transform = "scale(1.5)";
+      setTimeout(() => { el.playerLevelBadge.style.transform = "scale(1)"; }, 300);
+    }
+  }
+  renderPlayer();
+}
+
+function unlockAchievement(id) {
+  if (!state.player.achievements[id]) {
+    state.player.achievements[id] = true;
+    gainXp(50); // bonus XP for achievement
+  }
 }
 
 function renderSummary() {
   const s = state.analysis.summary;
+  if (s.formHealthScore >= 90) unlockAchievement("badge-perfect");
+  gainXp(10); // Base XP for viewing summary
   el.summaryGrid.innerHTML = [["Duration", formatDuration(s.durationSeconds)], ["Distance", `${s.distanceKm.toFixed(2)} km`], ["Avg pace", `${formatMetric(s.averagePace, "pace")} /km`], ["Avg cadence", `${formatMetric(s.averageCadence, "cadence")} spm`], ["Form score", `${s.formHealthScore}/100`], ["Breakdowns", String(s.eventCount)]]
     .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("");
 }
@@ -509,6 +584,8 @@ async function handleVideoUpload(file) {
   try {
     state.video.frames = await extractVideoFrames(state.video.previewUrl);
     state.video.status = `${state.video.frames.length} frames ready from ${file.name}`;
+    unlockAchievement("badge-video");
+    gainXp(20);
     el.analyzeVisionButton.disabled = false;
   } catch (error) {
     state.video.status = `Video sampling failed: ${error.message}`;
@@ -703,8 +780,11 @@ async function extractVideoFrames(url) {
 
 function renderVideo() {
   el.videoStatus.textContent = state.video.status;
-  el.videoPreview.hidden = !state.video.previewUrl;
-  if (state.video.previewUrl && el.videoPreview.src !== state.video.previewUrl) el.videoPreview.src = state.video.previewUrl;
+  const hasLiveStream = Boolean(el.videoPreview?.srcObject);
+  const hasPreviewAsset = Boolean(state.video.previewUrl);
+  el.videoPreview.hidden = !(hasPreviewAsset || hasLiveStream || state.vision.liveMode);
+  el.videoPreview.classList.toggle("live-camera-active", hasLiveStream || state.vision.liveMode);
+  if (!hasLiveStream && state.video.previewUrl && el.videoPreview.src !== state.video.previewUrl) el.videoPreview.src = state.video.previewUrl;
   el.frameStrip.innerHTML = state.video.frames.map((frame) => `<figure><img src="${frame.dataUrl}" alt="Sampled video frame at ${frame.label}" /><figcaption>${frame.label}</figcaption></figure>`).join("");
 }
 
@@ -714,7 +794,20 @@ async function toggleLiveTracking() {
     return;
   }
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    if (!window.isSecureContext) {
+      throw new Error("Camera access needs a secure browser context. Reload the app at localhost and try again.");
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("This browser session does not expose camera access. Open the app in a browser window that allows media devices.");
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "user",
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
     stopLiveTracking({ preservePreview: true, silent: true });
     if (state.video.previewUrl) {
       URL.revokeObjectURL(state.video.previewUrl);
@@ -722,23 +815,32 @@ async function toggleLiveTracking() {
     }
     state.video.frames = [];
     state.video.name = "Live camera";
-    state.video.status = "Live tracking active";
+    state.video.status = "Camera connected. Warming up live tracking…";
+    el.videoPreview.autoplay = true;
+    el.videoPreview.controls = false;
     el.videoPreview.srcObject = stream;
     el.videoPreview.hidden = false;
+    await once(el.videoPreview, "loadedmetadata");
     await el.videoPreview.play();
     state.vision.liveMode = true;
+    state.video.status = "Live tracking active";
     state.vision.liveGemma = { status: "Watching live posture", narrative: "", running: false, error: null, lastUpdated: null };
     state.vision.frameAnalyses = [];
     state.vision.liveLatest = null;
     el.analyzeVisionButton.disabled = false;
     el.liveTrackingButton.textContent = "Stop Live Tracking";
+    startGpsTracking();
     switchTab("video");
     renderVideo();
     renderLiveVision();
+    renderGps();
     startLiveLoop();
   } catch (err) {
-    state.video.status = "Camera access denied or unavailable.";
+    state.video.status = describeCameraError(err);
+    state.vision.liveGemma.status = "Camera unavailable";
+    state.vision.liveGemma.error = null;
     renderVideo();
+    renderLiveVision();
   }
 }
 
@@ -753,19 +855,169 @@ function stopLiveTracking({ preservePreview = false, silent = false } = {}) {
   }
   if (el.videoPreview) {
     el.videoPreview.pause?.();
+    el.videoPreview.controls = true;
     if (!preservePreview) {
       el.videoPreview.srcObject = null;
+      el.videoPreview.classList.remove("live-camera-active");
       el.videoPreview.hidden = !state.video.previewUrl;
     }
   }
   state.vision.liveMode = false;
   state.vision.liveCooldownUntil = 0;
   state.vision.lastLiveFrameAt = 0;
+  stopGpsTracking({ keepSummary: true });
   el.liveTrackingButton.textContent = "Start Live Tracking";
   if (!silent && !state.video.previewUrl) {
     state.video.status = "Live tracking stopped";
     renderVideo();
   }
+}
+
+function startGpsTracking() {
+  stopGpsTracking({ keepSummary: false, silent: true });
+  if (!navigator.geolocation) {
+    state.gps = { ...state.gps, supported: false, tracking: false, status: "Geolocation unavailable in this browser.", error: "unavailable" };
+    renderGps();
+    return;
+  }
+  state.gps = {
+    ...state.gps,
+    supported: true,
+    tracking: true,
+    startedAt: Date.now(),
+    points: [],
+    distanceMeters: 0,
+    status: "Requesting GPS permission…",
+    error: null,
+    lastFix: null
+  };
+  renderGps();
+  state.gps.watchId = navigator.geolocation.watchPosition(handleGpsFix, handleGpsError, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 10000
+  });
+}
+
+function stopGpsTracking({ keepSummary = true, silent = false } = {}) {
+  if (state.gps.watchId != null && navigator.geolocation?.clearWatch) {
+    navigator.geolocation.clearWatch(state.gps.watchId);
+  }
+  const nextStatus = keepSummary && state.gps.points.length
+    ? `GPS summary saved (${state.gps.points.length} fixes)`
+    : silent ? state.gps.status : "GPS idle";
+  state.gps = {
+    ...state.gps,
+    tracking: false,
+    watchId: null,
+    status: nextStatus
+  };
+  renderGps();
+}
+
+function handleGpsFix(position) {
+  const point = {
+    lat: round(position.coords.latitude, 6),
+    lon: round(position.coords.longitude, 6),
+    accuracy: round(position.coords.accuracy, 1),
+    speed: Number.isFinite(position.coords.speed) ? round(position.coords.speed, 2) : null,
+    timestamp: position.timestamp
+  };
+  const previous = state.gps.points[state.gps.points.length - 1];
+  let distanceMeters = state.gps.distanceMeters;
+  const segmentMeters = previous ? haversineMeters(previous, point) : 0;
+  if (previous && segmentMeters < 250 && (point.accuracy == null || point.accuracy <= 100)) {
+    distanceMeters += segmentMeters;
+  }
+  const shouldAppend = !previous || segmentMeters >= 2 || state.gps.points.length < 2;
+  const points = shouldAppend ? [...state.gps.points, point].slice(-80) : [...state.gps.points.slice(0, -1), point];
+  state.gps = {
+    ...state.gps,
+    tracking: true,
+    points,
+    distanceMeters,
+    lastFix: point,
+    status: `GPS active (${points.length} fixes)`,
+    error: null
+  };
+  renderGps();
+}
+
+function handleGpsError(error) {
+  const message = error?.code === 1
+    ? "Location permission blocked. Allow location access in Chrome to track your run route."
+    : error?.code === 2
+      ? "Unable to determine your location right now."
+      : error?.code === 3
+        ? "GPS fix timed out. Move to a clearer outdoor signal and retry."
+        : error?.message || "GPS tracking failed.";
+  state.gps = {
+    ...state.gps,
+    tracking: false,
+    watchId: null,
+    status: message,
+    error: message
+  };
+  renderGps();
+}
+
+function renderGps() {
+  if (!el.gpsStatusChip) return;
+  const pace = averageGpsPace(state.gps);
+  const tone = state.gps.error ? "bad" : state.gps.tracking ? "good" : state.gps.points.length ? "warn" : "";
+  el.gpsStatusChip.textContent = state.gps.status;
+  el.gpsStatusChip.className = `live-gemma-status${tone ? ` ${tone}` : ""}`;
+  el.gpsDistanceValue.textContent = state.gps.distanceMeters ? `${(state.gps.distanceMeters / 1000).toFixed(2)} km` : "0.00 km";
+  el.gpsPaceValue.textContent = pace ? `${formatMetric(pace, "pace")} /km` : "—";
+  el.gpsAccuracyValue.textContent = state.gps.lastFix?.accuracy ? `${state.gps.lastFix.accuracy} m` : "—";
+  el.gpsFixValue.textContent = String(state.gps.points.length);
+  el.gpsCoords.textContent = state.gps.lastFix
+    ? `${state.gps.lastFix.lat}, ${state.gps.lastFix.lon}`
+    : state.gps.supported
+      ? "Start live tracking in Chrome to collect route points."
+      : "Geolocation is not available in this browser session.";
+  renderGpsRoute();
+}
+
+function renderGpsRoute() {
+  if (!el.gpsRoutePreview) return;
+  const points = state.gps.points;
+  if (points.length < 2) {
+    el.gpsRoutePreview.innerHTML = `<div class="empty-state">Your live route will appear here once GPS fixes start arriving.</div>`;
+    return;
+  }
+  const lats = points.map((point) => point.lat);
+  const lons = points.map((point) => point.lon);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const width = 320;
+  const height = 168;
+  const padding = 16;
+  const spanLon = Math.max(0.0001, maxLon - minLon);
+  const spanLat = Math.max(0.0001, maxLat - minLat);
+  const path = points.map((point, index) => {
+    const x = padding + ((point.lon - minLon) / spanLon) * (width - padding * 2);
+    const y = height - padding - ((point.lat - minLat) / spanLat) * (height - padding * 2);
+    return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const last = points[points.length - 1];
+  const lastX = padding + ((last.lon - minLon) / spanLon) * (width - padding * 2);
+  const lastY = height - padding - ((last.lat - minLat) / spanLat) * (height - padding * 2);
+  el.gpsRoutePreview.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Live GPS route preview">
+      <defs>
+        <linearGradient id="gpsRouteGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#9bf7ff"></stop>
+          <stop offset="100%" stop-color="#ff8fae"></stop>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="${width}" height="${height}" rx="18" fill="rgba(255,255,255,0.03)"></rect>
+      <path d="${path}" fill="none" stroke="url(#gpsRouteGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"></path>
+      <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="6" fill="#4af3ff" stroke="#120d12" stroke-width="2"></circle>
+    </svg>
+  `;
 }
 
 function startLiveLoop() {
@@ -1535,7 +1787,7 @@ async function apiJson(path, options = {}, retries = 1, timeoutMs = 15000) {
 }
 
 async function generateGemma() {
-  state.gemma = { status: "Connecting to local Gemma", output: null, error: null, running: true };
+  state.gemma = { status: "Connecting to repository-local Gemma 4", output: null, error: null, running: true };
   renderGemma();
   const report = buildReport();
   const system = "You are FormForward, a cautious POSE running coach. Use proxy-based wording. You receive wearable metrics and computer vision analysis (MediaPipe Pose Landmarker skeleton detection with biomechanical angle computation). Return only JSON with correction_cue, drill, next_run_focus, visual_observations, research_notes. For visual_observations, synthesize the CV pipeline findings with what you see in the frames.";
@@ -1549,9 +1801,9 @@ async function generateGemma() {
     });
     const body = await response.json();
     if (body.error) throw new Error(body.error);
-    state.gemma = { status: "Generated by Gemma", output: normalizeGemmaOutput(body.message?.content || body.response || "{}"), error: null, running: false };
+    state.gemma = { status: "Generated by local Gemma 4", output: normalizeGemmaOutput(body.message?.content || body.response || "{}"), error: null, running: false };
   } catch (error) {
-    state.gemma = { status: "Local Gemma unavailable", output: null, error: error.message, running: false };
+    state.gemma = { status: "Local Gemma runtime unavailable", output: null, error: error.message, running: false };
   }
   renderGemma();
 }
@@ -1609,7 +1861,24 @@ function renderPayload() {
 
 function buildReport() {
   const visionData = buildVisionPayload(state.vision.frameAnalyses);
-  return { ...state.analysis.gemmaPayload, video_context: { file_name: state.video.name || null, sampled_frames: state.video.frames.length }, cv_analysis: visionData, research_context: state.research.sources.filter((source) => source.ok).map(({ title, url, summary }) => ({ title, url, summary })) };
+  return {
+    ...state.analysis.gemmaPayload,
+    video_context: { file_name: state.video.name || null, sampled_frames: state.video.frames.length },
+    cv_analysis: visionData,
+    location_context: {
+      status: state.gps.status,
+      fix_count: state.gps.points.length,
+      distance_km: round(state.gps.distanceMeters / 1000, 2),
+      average_pace_min_per_km: averageGpsPace(state.gps),
+      last_fix: state.gps.lastFix ? {
+        lat: state.gps.lastFix.lat,
+        lon: state.gps.lastFix.lon,
+        accuracy_m: state.gps.lastFix.accuracy,
+        timestamp: new Date(state.gps.lastFix.timestamp).toISOString()
+      } : null
+    },
+    research_context: state.research.sources.filter((source) => source.ok).map(({ title, url, summary }) => ({ title, url, summary }))
+  };
 }
 
 function renderCoverage() {
@@ -1630,6 +1899,22 @@ function buildSampleGpx() {
 
 function tag(xml, name) {
   return xml.match(new RegExp(`<(?:(?:[\\w-]+):)?${name}\\b[^>]*>([\\s\\S]*?)<\\/(?:(?:[\\w-]+):)?${name}>`, "i"))?.[1]?.replace(/<[^>]+>/g, "").trim() || "";
+}
+function averageGpsPace(gpsState) {
+  if (!gpsState.startedAt || gpsState.distanceMeters < 25) return null;
+  const elapsedMinutes = (Date.now() - gpsState.startedAt) / 60000;
+  const distanceKm = gpsState.distanceMeters / 1000;
+  return distanceKm > 0 ? round(elapsedMinutes / distanceKm, 2) : null;
+}
+function haversineMeters(a, b) {
+  const toRad = (value) => value * Math.PI / 180;
+  const earthRadius = 6371000;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * earthRadius * Math.asin(Math.sqrt(h));
 }
 function firstNumber(xml, names) {
   for (const name of names) {
@@ -1700,6 +1985,28 @@ function once(target, eventName) {
     target.addEventListener(eventName, resolve, { once: true });
     target.addEventListener("error", () => reject(new Error(`${eventName} failed`)), { once: true });
   });
+}
+function describeCameraError(err) {
+  if (!err) return "Camera access failed for an unknown reason.";
+  const message = typeof err.message === "string" ? err.message : "";
+  switch (err.name) {
+    case "NotAllowedError":
+    case "PermissionDeniedError":
+      return "Camera access was blocked. Allow camera permission for localhost in the browser. If you are using the in-app browser and it still stays blocked, open the same localhost URL in Chrome or Safari and retry live tracking there.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "No camera was found on this device. Connect a camera or switch to a device with one available.";
+    case "NotReadableError":
+    case "TrackStartError":
+      return "Your camera is busy in another app. Close the other app using the camera, then retry live tracking.";
+    case "OverconstrainedError":
+    case "ConstraintNotSatisfiedError":
+      return "The requested camera settings were not available. Retry live tracking and the app will use the closest supported camera mode.";
+    case "AbortError":
+      return "The browser interrupted camera startup. Try starting live tracking one more time.";
+    default:
+      return message || "Camera access failed. Check browser permissions and try again.";
+  }
 }
 function compactUrl(url) {
   try {
