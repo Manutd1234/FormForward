@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, unlink } from "node:fs/promises";
+import { access, readFile, writeFile, unlink } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -57,17 +57,13 @@ createServer(async (request, response) => {
 async function handleGemma(request, response) {
   const payload = await readJsonBody(request, 18_000_000);
   try {
-    const result = payload.local_model_path
-      ? await runLocalGemma(payload)
-      : await runOllamaChat(payload, 45000);
+    const result = await runLocalGemma(payload);
     writeJson(response, result);
-  } catch {
+  } catch (error) {
     writeJson(
       response,
       {
-        error: payload.local_model_path
-          ? `Local Gemma runner unavailable. Check ${payload.local_model_path} and install Python transformers dependencies.`
-          : `Ollama unavailable. Install Ollama, then run: ollama run ${payload.model || "gemma4"}`
+        error: error.message || "Local Gemma runner unavailable."
       },
       502
     );
@@ -190,7 +186,7 @@ async function handleAnalyzeForm(request, response) {
     run_analysis,      // Structured run metrics from the frontend
     research_sources,  // Previously gathered research context
     cv_analysis,       // Vision pipeline results (MediaPipe angles, etc.)
-    model              // Ollama model name
+    model              // Optional local model label
   } = payload;
 
   const modelName = model || "gemma4:latest";
@@ -286,11 +282,16 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
 
   pipelineStages.push({ stage: "prompt_construction", status: "success", message_length: userContent.length });
 
-  // ──── Stage 3: Send to Gemma 4 via local runtime or Ollama ────
+  // ──── Stage 3: Send to Gemma 4 via local runtime ────
   try {
-    const rawResult = payload.local_model_path
-      ? await runLocalGemma({ model: modelName, local_model_path: payload.local_model_path, messages, stream: false, format: "json", options: { temperature: 0.15, num_predict: 800 } })
-      : await runOllamaChat({ model: modelName, messages, stream: false, format: "json", options: { temperature: 0.15, num_predict: 800 } }, 90000);
+    const rawResult = await runLocalGemma({
+      model: modelName,
+      local_model_path: payload.local_model_path,
+      messages,
+      stream: false,
+      format: "json",
+      options: { temperature: 0.15, num_predict: 800 }
+    });
 
     const gemmaContent = rawResult.message?.content || rawResult.response || "";
 
@@ -319,9 +320,7 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
     pipelineStages.push({ stage: "gemma_generation", status: "failed", error: err.message });
     writeJson(response, {
       pipeline: pipelineStages,
-      error: payload.local_model_path
-        ? `Local Gemma unavailable. Configure a repo-local model directory and Python transformers runtime.`
-        : `Gemma unavailable. Run: ollama run ${modelName}`,
+      error: err.message || "Local Gemma runtime unavailable.",
       pdf_text_preview: extractedPdfText.substring(0, 500) || null
     }, 502);
   }
@@ -329,9 +328,14 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
 
 async function extractPdfText(pdfPath) {
   const diagnostics = [];
+  const pythonBin = await resolvePythonForLocalTools();
 
   try {
-    const { stdout } = await execFileAsync("python3", [join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), pdfPath], { timeout: 120000 });
+    const command = shouldForceArm64(pythonBin) ? "/usr/bin/arch" : pythonBin;
+    const args = shouldForceArm64(pythonBin)
+      ? ["-arm64", pythonBin, join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), pdfPath]
+      : [join(rootDir, "scripts", "scrapers", "pdf_scraper.py"), pdfPath];
+    const { stdout } = await execFileAsync(command, args, { cwd: rootDir, timeout: 120000, maxBuffer: 16_000_000 });
     const parsed = JSON.parse(stdout || "{}");
     if (parsed.error) diagnostics.push(`PaddleOCR: ${parsed.error}`);
     if (parsed.text) return { text: parsed.text, engine: "PaddleOCR", diagnostics };
@@ -364,33 +368,79 @@ async function extractPdfText(pdfPath) {
   return { text: "", engine: "none", diagnostics };
 }
 
-async function runOllamaChat(payload, timeoutMs) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const ollamaResponse = await fetch("http://127.0.0.1:11434/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
-    const text = await ollamaResponse.text();
-    if (!ollamaResponse.ok) throw new Error(`Ollama returned ${ollamaResponse.status}`);
-    return parseModelResponse(text);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function runLocalGemma(payload) {
+  const runtime = await resolveLocalGemmaRuntime(payload.local_model_path);
   const { stdout } = await execFileAsync(
-    "python3",
-    [join(rootDir, "scripts", "local_gemma_runner.py"), JSON.stringify(payload)],
-    { timeout: 120000, maxBuffer: 16_000_000 }
+    runtime.command,
+    [...runtime.args, join(rootDir, "scripts", "local_gemma_runner.py"), JSON.stringify({ ...payload, local_model_path: runtime.modelPath })],
+    { cwd: rootDir, timeout: 120000, maxBuffer: 16_000_000 }
   );
   const parsed = JSON.parse(stdout || "{}");
   if (parsed.error) throw new Error(parsed.error);
   return parsed;
+}
+
+async function resolveLocalGemmaRuntime(requestedModelPath = "") {
+  const modelCandidates = [
+    requestedModelPath,
+    join(rootDir, "local-models", "gemma4"),
+    "local-models/gemma4"
+  ].filter(Boolean);
+  let resolvedModelPath = "";
+  for (const candidate of modelCandidates) {
+    const absoluteCandidate = candidate.startsWith("/") ? candidate : join(rootDir, candidate);
+    if (await fileExists(absoluteCandidate)) {
+      resolvedModelPath = absoluteCandidate;
+      break;
+    }
+  }
+  if (!resolvedModelPath) {
+    throw new Error("Local Gemma model not found. Expected a repo-local model at /local-models/gemma4.");
+  }
+
+  const pythonCandidates = [
+    join(rootDir, ".venv", "bin", "python"),
+    join(rootDir, ".venv", "bin", "python3"),
+    "python3"
+  ];
+  for (const candidate of pythonCandidates) {
+    if (candidate === "python3" || await fileExists(candidate)) {
+      return {
+        command: shouldForceArm64(candidate) ? "/usr/bin/arch" : candidate,
+        args: shouldForceArm64(candidate) ? ["-arm64", candidate] : [],
+        pythonPath: candidate,
+        modelPath: resolvedModelPath
+      };
+    }
+  }
+  throw new Error("No Python runtime found for the local Gemma runner. Create .venv and install the transformer dependencies.");
+}
+
+function shouldForceArm64(pythonPath) {
+  return process.platform === "darwin" && pythonPath !== "python3";
+}
+
+async function resolvePythonForLocalTools() {
+  const candidates = [
+    join(rootDir, ".venv", "bin", "python"),
+    join(rootDir, ".venv", "bin", "python3"),
+    "python3"
+  ];
+  for (const candidate of candidates) {
+    if (candidate === "python3" || await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("No Python runtime found for local OCR tools.");
+}
+
+async function fileExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseModelResponse(text) {
