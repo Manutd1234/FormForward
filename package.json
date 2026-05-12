@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
-    "lint": "node --check server.js && node --check src/app.js && node --check src/vision.js",
+    "lint": "node --check server.js && node --check src/app.js && node --check src/vision.js && node --check src/fit-parser.js",
     "test": "node --test src/static.test.js"
   }
 }

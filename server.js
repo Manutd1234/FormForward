@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { access, readFile, writeFile, unlink } from "node:fs/promises";
+import { access, readFile, writeFile, unlink, readdir, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
@@ -20,7 +20,11 @@ const mimeTypes = {
   ".gpx": "application/gpx+xml; charset=utf-8",
   ".png": "image/png",
   ".jpg": "image/jpeg",
-  ".webp": "image/webp"
+  ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".fit": "application/octet-stream",
+  ".svg": "image/svg+xml"
 };
 
 createServer(async (request, response) => {
@@ -44,6 +48,14 @@ createServer(async (request, response) => {
     }
     if (url.pathname === "/api/analyze-form" && request.method === "POST") {
       await handleAnalyzeForm(request, response);
+      return;
+    }
+    if (url.pathname === "/api/fit-files" && request.method === "GET") {
+      await handleListFitFiles(request, response);
+      return;
+    }
+    if (url.pathname === "/api/whatsapp-videos" && request.method === "GET") {
+      await handleListWhatsAppVideos(request, response);
       return;
     }
     await serveStatic(url.pathname, response);
@@ -271,8 +283,7 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
 
   const userContent = userParts.join("\n\n");
   const messages = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userContent }
+    { role: "user", content: `${systemPrompt}\n\n${userContent}` }
   ];
 
   // Attach video frames if available
@@ -499,4 +510,44 @@ async function serveStatic(pathname, response) {
 function writeJson(response, body, status = 200) {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+async function handleListFitFiles(_request, response) {
+  const fitDir = join(rootDir, "data", "fit");
+  try {
+    const files = await readdir(fitDir);
+    const fitFiles = files.filter(f => f.endsWith(".fit") || f.endsWith(".FIT"));
+    const details = await Promise.all(fitFiles.map(async (name) => {
+      const fileStat = await stat(join(fitDir, name));
+      return {
+        name,
+        path: `/data/fit/${name}`,
+        sizeKB: Math.round(fileStat.size / 1024),
+        modified: fileStat.mtime.toISOString()
+      };
+    }));
+    writeJson(response, { files: details, count: details.length });
+  } catch (err) {
+    writeJson(response, { files: [], count: 0, error: err.message });
+  }
+}
+
+async function handleListWhatsAppVideos(_request, response) {
+  const videoDir = join(rootDir, "data", "videos");
+  try {
+    const files = await readdir(videoDir);
+    const videoFiles = files.filter(f => /\.(mp4|mov|3gp|webm)$/i.test(f));
+    const details = await Promise.all(videoFiles.map(async (name) => {
+      const fileStat = await stat(join(videoDir, name));
+      return {
+        name,
+        path: `/data/videos/${name}`,
+        sizeMB: Math.round(fileStat.size / 1024 / 1024 * 10) / 10,
+        modified: fileStat.mtime.toISOString()
+      };
+    }));
+    writeJson(response, { videos: details, count: details.length });
+  } catch (err) {
+    writeJson(response, { videos: [], count: 0, error: err.message });
+  }
 }

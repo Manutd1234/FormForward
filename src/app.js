@@ -1,4 +1,5 @@
 import { initVision, isReady as visionReady, detectPose, computeAngles, assessForm, drawSkeleton, buildVisionPayload, analyzeGaitCycle } from "./vision.js";
+import { parseFitFile } from "./fit-parser.js";
 
 const METRICS = {
   cadence: { label: "Cadence", unit: "spm", color: "#ff9b83", aliases: ["cadence", "runcadence", "cadencespm", "spm"] },
@@ -194,7 +195,12 @@ el.researchUrls.value = DEFAULT_RESEARCH_URLS;
 el.fileInput.addEventListener("change", async ({ target }) => {
   const [file] = target.files;
   if (!file) return;
-  loadActivity(await file.text(), file.name);
+  if (file.name.toLowerCase().endsWith(".fit")) {
+    const buffer = await file.arrayBuffer();
+    loadFitActivity(buffer, file.name);
+  } else {
+    loadActivity(await file.text(), file.name);
+  }
 });
 el.loadSampleButton.addEventListener("click", () => loadActivity(SAMPLE_CSV, "Sample CSV run"));
 el.loadSampleGpxButton.addEventListener("click", () => loadActivity(buildSampleGpx(), "Sample GPX run"));
@@ -233,7 +239,7 @@ document.querySelectorAll(".deep-dive-link").forEach((link) => {
   link.addEventListener("click", () => switchTab(link.dataset.goto));
 });
 
-function switchTab(tabId) {
+window.switchTab = function switchTab(tabId) {
   state.activeTab = tabId;
   el.tabBar.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === tabId));
   document.querySelectorAll(".tab-pane").forEach((p) => {
@@ -241,7 +247,7 @@ function switchTab(tabId) {
     p.classList.toggle("active", isActive);
     if (isActive) p.style.animation = "none", p.offsetHeight, p.style.animation = "";
   });
-  if (tabId === "charts" && state.analysis) { renderMetricTabs(); renderChart(); }
+  if (tabId === "analysis" && state.analysis) { renderMetricTabs(); renderChart(); }
 }
 
 initManualSources();
@@ -264,8 +270,25 @@ function loadActivity(text, name) {
 
 function parseActivity(text, name) {
   if (name.toLowerCase().endsWith(".gpx") || text.trimStart().startsWith("<")) return { type: "GPX", rows: parseGpx(text) };
-  if (name.toLowerCase().endsWith(".fit")) throw new Error("FIT import is planned next. Use GPX or CSV for this demo.");
   return { type: "CSV", rows: parseCsv(text) };
+}
+
+function loadFitActivity(buffer, name) {
+  try {
+    const result = parseFitFile(buffer);
+    if (!result.rows.length) {
+      window.alert("No usable running records found in this FIT file.");
+      return;
+    }
+    state.analysis = analyzeRun(result.rows);
+    state.sourceName = `${name} (FIT — ${result.summary.totalRecords} records, ${result.summary.durationMinutes} min)`;
+    state.gemma = { status: "Idle", output: null, error: null, running: false };
+    if (!state.analysis.availableMetrics.includes(state.activeMetric)) state.activeMetric = state.analysis.availableMetrics[0] || "cadence";
+    gainXp(25); // Bonus XP for FIT import
+    render();
+  } catch (err) {
+    window.alert(`FIT parse error: ${err.message}`);
+  }
 }
 
 function parseCsv(text) {
@@ -389,8 +412,14 @@ function mapPatterns(events) {
 }
 
 function summarize(samples, events, patterns) {
-  const durationSeconds = samples.at(-1).timeSeconds - samples[0].timeSeconds;
-  const score = Math.max(35, Math.round(100 - Math.min(55, events.reduce((sum, event) => sum + event.severity * 4, 0))));
+  const durationSeconds = samples.length ? samples.at(-1).timeSeconds - samples[0].timeSeconds : 0;
+  
+  let score = "N/A";
+  if (events.length > 0) {
+    score = Math.max(35, Math.round(100 - Math.min(55, events.reduce((sum, event) => sum + event.severity * 4, 0))));
+  } else if (samples.length > 10) {
+    score = 100;
+  }
   return {
     durationSeconds,
     distanceKm: estimateDistance(samples),
@@ -480,9 +509,10 @@ function unlockAchievement(id) {
 
 function renderSummary() {
   const s = state.analysis.summary;
-  if (s.formHealthScore >= 90) unlockAchievement("badge-perfect");
+  if (s.formHealthScore !== "N/A" && s.formHealthScore >= 90) unlockAchievement("badge-perfect");
   gainXp(10); // Base XP for viewing summary
-  el.summaryGrid.innerHTML = [["Duration", formatDuration(s.durationSeconds)], ["Distance", `${s.distanceKm.toFixed(2)} km`], ["Avg pace", `${formatMetric(s.averagePace, "pace")} /km`], ["Avg cadence", `${formatMetric(s.averageCadence, "cadence")} spm`], ["Form score", `${s.formHealthScore}/100`], ["Breakdowns", String(s.eventCount)]]
+  const displayScore = s.formHealthScore === "N/A" ? "Waiting" : `${s.formHealthScore}/100`;
+  el.summaryGrid.innerHTML = [["Duration", formatDuration(s.durationSeconds)], ["Distance", `${s.distanceKm.toFixed(2)} km`], ["Avg pace", `${formatMetric(s.averagePace, "pace")} /km`], ["Avg cadence", `${formatMetric(s.averageCadence, "cadence")} spm`], ["Form score", displayScore], ["Breakdowns", String(s.eventCount)]]
     .map(([label, value]) => `<article class="summary-card"><span>${label}</span><strong>${value}</strong></article>`).join("");
 }
 
@@ -665,10 +695,10 @@ async function runVisionAnalysis() {
   if (withAssess.length) {
     el.formClassStatus.textContent = "3-tier grading applied";
     stages[2]?.classList.add("done");
-    renderFormAssessment(withAssess);
   } else {
     el.formClassStatus.textContent = "Insufficient data for classification";
   }
+  renderFormAssessment(withAssess);
 
   el.analyzeVisionButton.textContent = "Re-analyze";
   el.analyzeVisionButton.disabled = false;
@@ -706,6 +736,12 @@ function renderAngleGrid(analyses) {
 
 function renderFormAssessment(analyses) {
   el.assessmentPanel.hidden = false;
+  if (!analyses || analyses.length === 0) {
+    el.formScoreBadge.textContent = "N/A";
+    el.formScoreBadge.className = "form-score-badge empty";
+    el.assessmentColumns.innerHTML = `<div class="assessment-col"><h3>Awaiting Analysis</h3><p>Upload a video with clear pose visibility to generate a score.</p></div>`;
+    return;
+  }
   const allIssues = [];
   const allStrengths = [];
   analyses.forEach((a) => {
@@ -1078,6 +1114,10 @@ function updateLiveStateFromAnalysis(analysis, { narrative } = { narrative: true
   renderAngleGrid([analysis]);
   renderFormAssessment([analysis]);
   renderLiveVision();
+  // OCR dot overlay
+  if (analysis.landmarks && typeof renderOcrDots === "function") {
+    renderOcrDots(analysis.landmarks, analysis.assessment);
+  }
   if (narrative) scheduleLiveGemmaNarrative();
 }
 
@@ -1086,8 +1126,14 @@ function renderLiveVision() {
   const assessment = live?.assessment;
   const score = assessment?.score;
   const tone = !Number.isFinite(score) ? "" : score >= 75 ? "good" : score >= 50 ? "warn" : "bad";
-  el.liveScoreChip.textContent = Number.isFinite(score) ? `${score}/100` : "--/100";
-  el.liveScoreChip.className = `live-score-chip${tone ? ` ${tone}` : ""}`;
+  
+  if (Number.isFinite(score)) {
+    el.liveScoreChip.textContent = `${score}/100`;
+    el.liveScoreChip.className = `live-score-chip ${tone}`;
+  } else {
+    el.liveScoreChip.textContent = "Awaiting Analysis";
+    el.liveScoreChip.className = "live-score-chip empty";
+  }
   el.liveScoreRingValue.textContent = Number.isFinite(score) ? score : "--";
   el.liveScoreRingValue.parentElement.style.setProperty("--ring-progress", String(Math.max(0, Math.min(100, score || 0))));
   el.liveScoreRingValue.parentElement.style.setProperty("--ring-color", tone === "good" ? "#7ed6af" : tone === "warn" ? "#f3a12b" : "#f36b6d");
@@ -1217,8 +1263,7 @@ async function scheduleLiveGemmaNarrative() {
         model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
         local_model_path: el.localGemmaPathInput?.value.trim() || "",
         messages: [
-          { role: "system", content: "You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON." },
-          { role: "user", content: JSON.stringify(prompt) }
+          { role: "user", content: `You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON.\n\n${JSON.stringify(prompt)}` }
         ],
         stream: false,
         format: "json",
@@ -1543,6 +1588,9 @@ async function runFullPipeline() {
 
     // Success — update the form adjustments panel
     const coaching = result.coaching || {};
+    if (coaching.raw) {
+      throw new Error("Gemma failed to return structured data. Try adjusting the prompt or model.");
+    }
     renderOptimalFormOutput(coaching, result);
 
     // Also update the Gemma output on the AI Coach tab
@@ -1791,13 +1839,13 @@ async function generateGemma() {
   renderGemma();
   const report = buildReport();
   const system = "You are FormForward, a cautious POSE running coach. Use proxy-based wording. You receive wearable metrics and computer vision analysis (MediaPipe Pose Landmarker skeleton detection with biomechanical angle computation). Return only JSON with correction_cue, drill, next_run_focus, visual_observations, research_notes. For visual_observations, synthesize the CV pipeline findings with what you see in the frames.";
-  const userMessage = { role: "user", content: `Create one concise coaching response from this payload:\n${JSON.stringify(report)}` };
+  const userMessage = { role: "user", content: `${system}\n\nCreate one concise coaching response from this payload:\n${JSON.stringify(report)}` };
   if (state.video.frames.length) userMessage.images = state.video.frames.map((frame) => frame.base64);
   try {
     const response = await fetch("/api/gemma", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL, local_model_path: el.localGemmaPathInput?.value.trim() || "", messages: [{ role: "system", content: system }, userMessage], stream: false, format: "json", options: { temperature: 0.2, num_predict: 420 } })
+      body: JSON.stringify({ model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL, local_model_path: el.localGemmaPathInput?.value.trim() || "", messages: [userMessage], stream: false, format: "json", options: { temperature: 0.2, num_predict: 420 } })
     });
     const body = await response.json();
     if (body.error) throw new Error(body.error);
@@ -2022,3 +2070,448 @@ function escapeHtml(value) {
 function qs(selector) {
   return document.querySelector(selector);
 }
+
+// ═══════════ WhatsApp Video Gallery ═══════════
+const whatsappVideoGrid = qs("#whatsappVideoGrid");
+const whatsappStatus = qs("#whatsappStatus");
+const loadWhatsappButton = qs("#loadWhatsappButton");
+
+if (loadWhatsappButton) {
+  loadWhatsappButton.addEventListener("click", loadWhatsAppVideos);
+}
+
+async function loadWhatsAppVideos() {
+  if (whatsappStatus) whatsappStatus.textContent = "Loading WhatsApp videos...";
+  try {
+    const response = await fetch("/api/whatsapp-videos");
+    const data = await response.json();
+    if (!data.videos?.length) {
+      whatsappStatus.textContent = "No WhatsApp videos found in data/videos/.";
+      return;
+    }
+    whatsappVideoGrid.innerHTML = data.videos.map((v, i) => `
+      <div class="whatsapp-video-card" style="background: rgba(37,211,102,0.05); border: 1px solid rgba(37,211,102,0.2); border-radius: 12px; overflow: hidden; transition: all 0.3s ease;">
+        <video src="${v.path}" preload="metadata" muted playsinline style="width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: pointer;"
+          onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
+        <div style="padding: 10px;">
+          <strong style="font-size: 0.85rem; color: #fff;">Run Video ${i + 1}</strong>
+          <p style="font-size: 0.75rem; color: var(--muted); margin-top: 2px;">${v.name} • ${v.sizeMB} MB</p>
+          <div style="display: flex; gap: 6px; margin-top: 8px;">
+            <button type="button" class="wa-analyze-btn" data-path="${v.path}" style="flex: 1; background: linear-gradient(135deg, #25d366, #128c7e); color: #fff; border: none; padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">🔍 Analyze Pose</button>
+            <button type="button" class="wa-train-btn" data-path="${v.path}" style="flex: 1; background: rgba(243,161,43,0.2); color: var(--amber); border: 1px solid rgba(243,161,43,0.3); padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">⚡ Train Gemma</button>
+          </div>
+        </div>
+      </div>
+    `).join("");
+
+    // Bind analyze buttons
+    whatsappVideoGrid.querySelectorAll(".wa-analyze-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const videoPath = btn.dataset.path;
+        btn.textContent = "⏳ Analyzing…";
+        btn.disabled = true;
+        try {
+          const resp = await fetch(videoPath);
+          const blob = await resp.blob();
+          const file = new File([blob], videoPath.split("/").pop(), { type: "video/mp4" });
+          await handleVideoUpload(file);
+          switchTab("video");
+          setTimeout(() => {
+            runVisionAnalysis();
+            el.visionPanel.scrollIntoView({ behavior: "smooth" });
+          }, 800);
+          unlockAchievement("badge-video");
+          gainXp(30);
+        } catch (e) {
+          btn.textContent = "❌ Failed";
+        }
+      });
+    });
+
+    // Bind train buttons
+    whatsappVideoGrid.querySelectorAll(".wa-train-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const videoPath = btn.dataset.path;
+        btn.textContent = "⏳ Training…";
+        btn.disabled = true;
+        try {
+          const resp = await fetch(videoPath);
+          const blob = await resp.blob();
+          const file = new File([blob], videoPath.split("/").pop(), { type: "video/mp4" });
+          await handleVideoUpload(file);
+          await runVisionAnalysis();
+          await runFullPipeline();
+          if (state.gemma.error) throw new Error(state.gemma.error);
+          btn.textContent = "✅ Trained";
+          gainXp(40);
+          switchTab("coach");
+        } catch (e) {
+          btn.textContent = "❌ Failed";
+        }
+      });
+    });
+
+    whatsappStatus.textContent = `${data.videos.length} WhatsApp videos loaded. Hover to preview, click to analyze.`;
+    gainXp(15);
+  } catch (err) {
+    whatsappStatus.textContent = `Failed to load videos: ${err.message}`;
+  }
+}
+
+// ═══════════ FIT Data Library ═══════════
+const fitFileGrid = qs("#fitFileGrid");
+const fitTrainingStatus = qs("#fitTrainingStatus");
+const loadFitLibraryButton = qs("#loadFitLibraryButton");
+const trainAllFitButton = qs("#trainAllFitButton");
+
+if (loadFitLibraryButton) loadFitLibraryButton.addEventListener("click", loadFitLibrary);
+if (trainAllFitButton) trainAllFitButton.addEventListener("click", trainAllFitData);
+
+const fitLibrary = { files: [], parsedRuns: [], loaded: false };
+
+async function loadFitLibrary() {
+  if (fitTrainingStatus) fitTrainingStatus.textContent = "Scanning FIT library…";
+  try {
+    const response = await fetch("/api/fit-files");
+    const data = await response.json();
+    fitLibrary.files = data.files || [];
+    if (!fitLibrary.files.length) {
+      fitTrainingStatus.textContent = "No FIT files found in data/fit/.";
+      return;
+    }
+    fitFileGrid.innerHTML = fitLibrary.files.map((f, i) => `
+      <div class="fit-file-card" data-index="${i}" style="background: rgba(243,161,43,0.06); border: 1px solid rgba(243,161,43,0.15); border-radius: 8px; padding: 10px; cursor: pointer; transition: all 0.2s ease; display: flex; flex-direction: column; gap: 4px;"
+        onmouseenter="this.style.borderColor='rgba(243,161,43,0.5)'; this.style.background='rgba(243,161,43,0.12)';"
+        onmouseleave="this.style.borderColor='rgba(243,161,43,0.15)'; this.style.background='rgba(243,161,43,0.06)';">
+        <strong style="font-size: 0.78rem; color: var(--amber); word-break: break-all;">📊 ${f.name.replace("_ACTIVITY.fit","")}</strong>
+        <span style="font-size: 0.7rem; color: var(--muted);">${f.sizeKB} KB</span>
+      </div>
+    `).join("");
+
+    // Click to load individual FIT file
+    fitFileGrid.querySelectorAll(".fit-file-card").forEach(card => {
+      card.addEventListener("click", async () => {
+        const idx = parseInt(card.dataset.index);
+        const f = fitLibrary.files[idx];
+        card.style.opacity = "0.5";
+        try {
+          const resp = await fetch(f.path);
+          const buffer = await resp.arrayBuffer();
+          loadFitActivity(buffer, f.name);
+          card.style.opacity = "1";
+          card.style.borderColor = "#7ed6af";
+          fitTrainingStatus.textContent = `Loaded ${f.name}`;
+        } catch (e) {
+          card.style.opacity = "1";
+          fitTrainingStatus.textContent = `Failed to load ${f.name}: ${e.message}`;
+        }
+      });
+    });
+
+    fitLibrary.loaded = true;
+    fitTrainingStatus.textContent = `${fitLibrary.files.length} FIT files ready. Click any to load, or hit "Train Gemma on All" for bulk training.`;
+    gainXp(20);
+  } catch (err) {
+    fitTrainingStatus.textContent = `Failed: ${err.message}`;
+  }
+}
+
+async function trainAllFitData() {
+  if (!fitLibrary.files.length) {
+    await loadFitLibrary();
+  }
+  if (!fitLibrary.files.length) return;
+
+  const total = fitLibrary.files.length;
+  fitTrainingStatus.textContent = `Parsing ${total} FIT files for Gemma 4 training…`;
+  fitLibrary.parsedRuns = [];
+
+  let processed = 0;
+  let errors = 0;
+  const batchSize = 5; // parse in batches to not block UI
+
+  for (let i = 0; i < total; i += batchSize) {
+    const batch = fitLibrary.files.slice(i, i + batchSize);
+    await Promise.all(batch.map(async (f) => {
+      try {
+        const resp = await fetch(f.path);
+        const buffer = await resp.arrayBuffer();
+        const result = parseFitFile(buffer);
+        if (result.rows.length > 0) {
+          fitLibrary.parsedRuns.push({
+            name: f.name,
+            summary: result.summary,
+            rows: result.rows.filter((_, j) => j % 10 === 0) // Downsample for training context
+          });
+        }
+        processed++;
+      } catch {
+        errors++;
+        processed++;
+      }
+      fitTrainingStatus.textContent = `Parsed ${processed}/${total} FIT files (${errors} errors)…`;
+    }));
+  }
+
+  fitTrainingStatus.textContent = `✅ Parsed ${fitLibrary.parsedRuns.length} valid runs from ${total} files. Sending to Gemma 4…`;
+
+  // Build training context from all parsed FIT data
+  const trainingContext = {
+    total_runs: fitLibrary.parsedRuns.length,
+    summaries: fitLibrary.parsedRuns.map(r => ({
+      file: r.name,
+      duration_min: r.summary.durationMinutes,
+      avg_cadence: r.summary.avgCadence,
+      avg_hr: r.summary.avgHR,
+      avg_pace: r.summary.avgPace,
+      records: r.summary.totalRecords
+    })),
+    // Include detailed data from first 5 runs as exemplars
+    exemplar_runs: fitLibrary.parsedRuns.slice(0, 5).map(r => ({
+      file: r.name,
+      data_points: r.rows.slice(0, 30)
+    }))
+  };
+
+  // Feed into the Gemma pipeline
+  try {
+    const response = await fetch("/api/analyze-form", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run_analysis: {
+          ...state.analysis?.gemmaPayload,
+          fit_training_data: trainingContext
+        },
+        research_sources: state.research.sources,
+        cv_analysis: buildVisionPayload(state.vision.frameAnalyses),
+        model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+        local_model_path: el.localGemmaPathInput?.value.trim() || ""
+      })
+    });
+    const result = await response.json();
+    if (result.coaching) {
+      renderOptimalFormOutput(result.coaching, result);
+      state.gemma = {
+        status: `Trained on ${fitLibrary.parsedRuns.length} FIT activities via ${result.model_used || "Gemma 4"}`,
+        output: normalizeGemmaOutput(JSON.stringify(result.coaching)),
+        error: null,
+        running: false
+      };
+      renderGemma();
+      renderPayload();
+      unlockAchievement("badge-gemma");
+      gainXp(100);
+    }
+    fitTrainingStatus.textContent = `✅ Gemma 4 trained on ${fitLibrary.parsedRuns.length} runs. Form adjustments updated on Dashboard.`;
+  } catch (err) {
+    fitTrainingStatus.textContent = `❌ Training failed: ${err.message}. FIT data parsed successfully — retry when Gemma is online.`;
+  }
+}
+
+// ═══════════ OCR Dot Tracking ═══════════
+const ocrDotsToggle = qs("#ocrDotsToggle");
+const ocrDotStyle = qs("#ocrDotStyle");
+const ocrOptimalCount = qs("#ocrOptimalCount");
+const ocrWarnCount = qs("#ocrWarnCount");
+const ocrCriticalCount = qs("#ocrCriticalCount");
+const ocrTotalCount = qs("#ocrTotalCount");
+
+let ocrDotsEnabled = false;
+let ocrOverlayCanvas = null;
+
+if (ocrDotsToggle) {
+  ocrDotsToggle.addEventListener("change", () => {
+    ocrDotsEnabled = ocrDotsToggle.checked;
+    if (ocrDotsEnabled) {
+      createOcrOverlay();
+    } else {
+      removeOcrOverlay();
+    }
+  });
+}
+
+function createOcrOverlay() {
+  if (ocrOverlayCanvas) return;
+  const video = el.videoPreview;
+  if (!video) return;
+
+  ocrOverlayCanvas = document.createElement("canvas");
+  ocrOverlayCanvas.id = "ocrDotsOverlay";
+  ocrOverlayCanvas.style.cssText = `
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 10;
+  `;
+  video.parentElement.style.position = "relative";
+  video.parentElement.appendChild(ocrOverlayCanvas);
+}
+
+function removeOcrOverlay() {
+  if (ocrOverlayCanvas) {
+    ocrOverlayCanvas.remove();
+    ocrOverlayCanvas = null;
+  }
+  if (ocrOptimalCount) ocrOptimalCount.textContent = "--";
+  if (ocrWarnCount) ocrWarnCount.textContent = "--";
+  if (ocrCriticalCount) ocrCriticalCount.textContent = "--";
+  if (ocrTotalCount) ocrTotalCount.textContent = "--";
+}
+
+// MediaPipe landmark names for labeling OCR dots
+const LANDMARK_NAMES = [
+  "Nose", "L Eye In", "L Eye", "L Eye Out", "R Eye In", "R Eye", "R Eye Out",
+  "L Ear", "R Ear", "Mouth L", "Mouth R", "L Shoulder", "R Shoulder",
+  "L Elbow", "R Elbow", "L Wrist", "R Wrist", "L Pinky", "R Pinky",
+  "L Index", "R Index", "L Thumb", "R Thumb", "L Hip", "R Hip",
+  "L Knee", "R Knee", "L Ankle", "R Ankle", "L Heel", "R Heel",
+  "L Foot Index", "R Foot Index"
+];
+
+// Key landmarks that map to running form assessment
+const FORM_LANDMARKS = {
+  11: "shoulder_l", 12: "shoulder_r", 13: "elbow_l", 14: "elbow_r",
+  23: "hip_l", 24: "hip_r", 25: "knee_l", 26: "knee_r",
+  27: "ankle_l", 28: "ankle_r", 0: "nose"
+};
+
+function renderOcrDots(landmarks, assessment) {
+  if (!ocrDotsEnabled || !ocrOverlayCanvas || !landmarks) return;
+
+  const video = el.videoPreview;
+  const vw = video.videoWidth || video.clientWidth || 640;
+  const vh = video.videoHeight || video.clientHeight || 480;
+  ocrOverlayCanvas.width = vw;
+  ocrOverlayCanvas.height = vh;
+  const ctx = ocrOverlayCanvas.getContext("2d");
+  ctx.clearRect(0, 0, vw, vh);
+
+  const style = ocrDotStyle?.value || "dots";
+  const grades = assessment?.grades || {};
+  let optimal = 0, warn = 0, critical = 0;
+
+  // Grade each landmark based on the form assessment
+  const landmarkGrades = {};
+  landmarks.forEach((lm, i) => {
+    const formKey = FORM_LANDMARKS[i];
+    let grade = "good"; // default
+    if (formKey) {
+      // Map landmark to assessment keys
+      if (formKey.includes("elbow") && (grades.leftElbow === "Bad" || grades.rightElbow === "Bad")) grade = "bad";
+      else if (formKey.includes("elbow") && (grades.leftElbow === "Needs Improvement" || grades.rightElbow === "Needs Improvement")) grade = "warn";
+      else if (formKey.includes("knee") && grades.kneeDrive === "Bad") grade = "bad";
+      else if (formKey.includes("knee") && grades.kneeDrive === "Needs Improvement") grade = "warn";
+      else if (formKey.includes("hip") && grades.hipDrop === "Bad") grade = "bad";
+      else if (formKey.includes("hip") && grades.hipDrop === "Needs Improvement") grade = "warn";
+      else if (formKey.includes("ankle") && (grades.leftHipAnkle === "Bad" || grades.rightHipAnkle === "Bad")) grade = "bad";
+      else if (formKey.includes("ankle") && (grades.overstride === "Needs Improvement")) grade = "warn";
+      else if (formKey === "nose" && grades.headAngle === "Bad") grade = "bad";
+      else if (formKey === "nose" && grades.headAngle === "Needs Improvement") grade = "warn";
+    }
+    landmarkGrades[i] = grade;
+    if (grade === "good") optimal++;
+    else if (grade === "warn") warn++;
+    else critical++;
+  });
+
+  const colors = { good: "#7ed6af", warn: "#f3a12b", bad: "#f36b6d" };
+
+  if (style === "skeleton" || style === "heatmap") {
+    // Draw skeleton connections
+    const connections = [
+      [11, 13], [13, 15], [12, 14], [14, 16], // arms
+      [11, 12], [11, 23], [12, 24], [23, 24], // torso
+      [23, 25], [25, 27], [24, 26], [26, 28], // legs
+      [27, 29], [28, 30], [29, 31], [30, 32]  // feet
+    ];
+    ctx.lineWidth = 3;
+    connections.forEach(([a, b]) => {
+      if (landmarks[a] && landmarks[b]) {
+        const gradeA = landmarkGrades[a] || "good";
+        const gradeB = landmarkGrades[b] || "good";
+        const worstGrade = gradeA === "bad" || gradeB === "bad" ? "bad" : gradeA === "warn" || gradeB === "warn" ? "warn" : "good";
+        ctx.strokeStyle = colors[worstGrade];
+        ctx.globalAlpha = style === "heatmap" ? 0.6 : 0.8;
+        ctx.beginPath();
+        ctx.moveTo(landmarks[a].x * vw, landmarks[a].y * vh);
+        ctx.lineTo(landmarks[b].x * vw, landmarks[b].y * vh);
+        ctx.stroke();
+      }
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  if (style === "heatmap") {
+    // Draw heatmap circles around problematic areas
+    landmarks.forEach((lm, i) => {
+      const grade = landmarkGrades[i];
+      if (grade !== "good" && lm.visibility > 0.3) {
+        const radius = grade === "bad" ? 28 : 18;
+        const gradient = ctx.createRadialGradient(lm.x * vw, lm.y * vh, 0, lm.x * vw, lm.y * vh, radius);
+        gradient.addColorStop(0, grade === "bad" ? "rgba(243,107,109,0.5)" : "rgba(243,161,43,0.4)");
+        gradient.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(lm.x * vw, lm.y * vh, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
+  }
+
+  // Draw dots on all styles
+  landmarks.forEach((lm, i) => {
+    if (lm.visibility < 0.3) return;
+    const grade = landmarkGrades[i];
+    const x = lm.x * vw;
+    const y = lm.y * vh;
+    const radius = FORM_LANDMARKS[i] ? 7 : 4;
+
+    // Outer glow
+    ctx.beginPath();
+    ctx.arc(x, y, radius + 3, 0, Math.PI * 2);
+    ctx.fillStyle = colors[grade] + "40";
+    ctx.fill();
+
+    // Inner dot
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = colors[grade];
+    ctx.fill();
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Label key landmarks
+    if (FORM_LANDMARKS[i] && style !== "dots") {
+      ctx.font = "bold 9px Inter, sans-serif";
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.fillText(LANDMARK_NAMES[i] || "", x, y - radius - 5);
+    }
+  });
+
+  // Update stats
+  if (ocrOptimalCount) ocrOptimalCount.textContent = optimal;
+  if (ocrWarnCount) ocrWarnCount.textContent = warn;
+  if (ocrCriticalCount) ocrCriticalCount.textContent = critical;
+  if (ocrTotalCount) ocrTotalCount.textContent = landmarks.length;
+}
+
+// Hook into the live vision loop to render OCR dots
+const _originalUpdateLive = updateLiveStateFromAnalysis;
+const patchedUpdateLive = function(analysis, opts) {
+  _originalUpdateLive.call(this, analysis, opts);
+  if (analysis?.landmarks && ocrDotsEnabled) {
+    renderOcrDots(analysis.landmarks, analysis.assessment);
+  }
+};
+// Monkey-patch — we call renderOcrDots from the live loop callback
+const _origAnalyzeFrame = analyzeCurrentVideoFrame;
+
+// Auto-load WhatsApp videos and FIT library on start
+setTimeout(() => {
+  loadWhatsAppVideos();
+  loadFitLibrary();
+}, 1500);

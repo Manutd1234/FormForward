@@ -213,6 +213,30 @@ button.primary:hover, .file-button.primary:hover {
   font-weight: 800;
 }
 
+/* Navigation Additions */
+.back-to-dashboard-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 850;
+  cursor: pointer;
+  padding: 4px 8px 4px 0;
+  transition: all 0.2s ease;
+}
+
+.back-to-dashboard-btn:hover {
+  color: #fffaf4;
+  transform: translateX(-4px);
+}
+
+.back-to-dashboard-btn svg {
+  transition: transform 0.2s ease;
+}
+
 /* Tabs */
 .bottom-nav {
   background: var(--surface);

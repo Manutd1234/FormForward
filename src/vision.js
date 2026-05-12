@@ -102,6 +102,10 @@ function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 export function computeAngles(lm) {
   if (!lm || lm.length < 33) return null;
 
+  // Stricter validation: ensure at least some key landmarks are visible
+  const visibleCount = lm.filter(pt => (pt.visibility || 0) > 0.3).length;
+  if (visibleCount < 10) return null;
+
   const midShoulder = mid(lm[LM.L_SHOULDER], lm[LM.R_SHOULDER]);
   const midHip = mid(lm[LM.L_HIP], lm[LM.R_HIP]);
   const midAnkle = mid(lm[LM.L_ANKLE], lm[LM.R_ANKLE]);
