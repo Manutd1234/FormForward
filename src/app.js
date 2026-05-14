@@ -1324,6 +1324,7 @@ async function scheduleLiveGemmaNarrative() {
     const body = await callGemmaEndpoint({
       model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
       local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      provider: getGemmaProviderPreference(),
       messages: [
         { role: "user", content: `You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON.\n\n${JSON.stringify(prompt)}` }
       ],
@@ -1650,6 +1651,7 @@ async function runFullPipeline() {
     research_sources: state.research.sources,
     cv_analysis: visionData,
     model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+    provider: getGemmaProviderPreference(),
     local_model_path: el.localGemmaPathInput?.value.trim() || ""
   };
 
@@ -1906,6 +1908,11 @@ function getApiUrl(path) {
   return path;
 }
 
+function getGemmaProviderPreference() {
+  const mode = el.apiSourceMode?.value || localStorage.getItem("ff_api_mode") || "auto";
+  return mode === "ollama" ? "ollama" : "auto";
+}
+
 async function callGemmaEndpoint(payload) {
   const mode = el.apiSourceMode?.value || "auto";
   let url = "/api/gemma";
@@ -1965,6 +1972,7 @@ async function startNetworkStatusPolling() {
     const nodeBase = customBase.replace(/\/$/, "");
     
     let nodeOk = false;
+    let activeNodeBase = "http://localhost:5173";
     try {
       const resp = await fetch("http://localhost:5173/api/health", { signal: AbortSignal.timeout(1200) });
       nodeOk = resp.ok;
@@ -1973,6 +1981,7 @@ async function startNetworkStatusPolling() {
         try {
           const resp = await fetch(`${nodeBase}/api/health`, { signal: AbortSignal.timeout(1200) });
           nodeOk = resp.ok;
+          if (nodeOk) activeNodeBase = nodeBase;
         } catch {}
       }
     }
@@ -1997,15 +2006,34 @@ async function startNetworkStatusPolling() {
     let gemmaOk = false;
     let gemmaText = "NODE: OFFLINE";
     try {
-      const resp = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(1200) });
+      const resp = await fetch(`${activeNodeBase}/api/gemma/status`, { signal: AbortSignal.timeout(1600) });
       if (resp.ok) {
-        gemmaOk = true;
-        gemmaText = "GEMMA 4: RUNNING (OLLAMA)";
+        const status = await resp.json();
+        const ollama = status.providers?.ollama;
+        const repoLocal = status.providers?.repo_local;
+        if (ollama?.ok && ollama.has_default_model) {
+          gemmaOk = true;
+          gemmaText = "GEMMA 4: READY (OLLAMA)";
+        } else if (ollama?.ok) {
+          gemmaOk = false;
+          gemmaText = "OLLAMA ONLINE: PULL GEMMA 4";
+        } else if (repoLocal?.ok) {
+          gemmaOk = true;
+          gemmaText = "GEMMA 4: READY (PYTHON)";
+        } else if (nodeOk) {
+          gemmaText = "GEMMA 4: MODEL MISSING";
+        }
       }
     } catch {
-      if (nodeOk) {
-        gemmaOk = true;
-        gemmaText = "GEMMA 4: DETECTED (PYTHON)";
+      if ((el.apiSourceMode?.value || "auto") === "ollama") {
+        try {
+          const resp = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(1200) });
+          gemmaOk = resp.ok;
+          gemmaText = resp.ok ? "GEMMA 4: OLLAMA DIRECT" : "GEMMA 4: OFFLINE";
+        } catch {}
+      } else if (nodeOk) {
+        gemmaOk = false;
+        gemmaText = "GEMMA 4: GATEWAY ONLINE";
       }
     }
 
@@ -2063,7 +2091,7 @@ async function apiJson(path, options = {}, retries = 1, timeoutMs = 15000) {
 }
 
 async function generateGemma() {
-  state.gemma = { status: "Connecting to repository-local Gemma 4", output: null, error: null, running: true };
+  state.gemma = { status: "Connecting to Gemma 4", output: null, error: null, running: true };
   renderGemma();
   const report = buildReport();
   const system = "You are FormForward, a cautious POSE running coach. Use proxy-based wording. You receive wearable metrics and computer vision analysis (MediaPipe Pose Landmarker skeleton detection with biomechanical angle computation). Return only JSON with correction_cue, drill, next_run_focus, visual_observations, research_notes. For visual_observations, synthesize the CV pipeline findings with what you see in the frames.";
@@ -2073,6 +2101,7 @@ async function generateGemma() {
     const body = await callGemmaEndpoint({
       model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
       local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      provider: getGemmaProviderPreference(),
       messages: [userMessage],
       stream: false,
       format: "json",
@@ -2138,6 +2167,7 @@ CONVERSATION INSTRUCTIONS:
     const body = await callGemmaEndpoint({
       model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
       local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      provider: getGemmaProviderPreference(),
       messages: messages,
       stream: false,
       format: "text",
@@ -2492,14 +2522,14 @@ async function loadWhatsAppVideos() {
     }
     whatsappVideoGrid.innerHTML = data.videos.map((v, i) => `
       <div class="whatsapp-video-card" style="background: rgba(37,211,102,0.05); border: 1px solid rgba(37,211,102,0.2); border-radius: 12px; overflow: hidden; transition: all 0.3s ease;">
-        <video src="${getApiUrl(v.path)}" preload="metadata" muted playsinline style="width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: pointer;"
+        <video src="${escapeHtml(getApiUrl(v.path))}" preload="metadata" muted playsinline style="width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: pointer;"
           onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
         <div style="padding: 10px;">
           <strong style="font-size: 0.85rem; color: #fff;">Run Video ${i + 1}</strong>
-          <p style="font-size: 0.75rem; color: var(--muted); margin-top: 2px;">${v.name} • ${v.sizeMB} MB</p>
+          <p style="font-size: 0.75rem; color: var(--muted); margin-top: 2px;">${escapeHtml(v.name)} • ${v.sizeMB} MB</p>
           <div style="display: flex; gap: 6px; margin-top: 8px;">
-            <button type="button" class="wa-analyze-btn" data-path="${v.path}" style="flex: 1; background: linear-gradient(135deg, #25d366, #128c7e); color: #fff; border: none; padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">🔍 Analyze Pose</button>
-            <button type="button" class="wa-train-btn" data-path="${v.path}" style="flex: 1; background: rgba(243,161,43,0.2); color: var(--amber); border: 1px solid rgba(243,161,43,0.3); padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">⚡ Train Gemma</button>
+            <button type="button" class="wa-analyze-btn" data-path="${escapeHtml(v.path)}" style="flex: 1; background: linear-gradient(135deg, #25d366, #128c7e); color: #fff; border: none; padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">🔍 Analyze Pose</button>
+            <button type="button" class="wa-train-btn" data-path="${escapeHtml(v.path)}" style="flex: 1; background: rgba(243,161,43,0.2); color: var(--amber); border: 1px solid rgba(243,161,43,0.3); padding: 6px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 800; cursor: pointer;">⚡ Train Gemma</button>
           </div>
         </div>
       </div>
@@ -2584,7 +2614,7 @@ async function loadFitLibrary() {
       <div class="fit-file-card" data-index="${i}" style="background: rgba(243,161,43,0.06); border: 1px solid rgba(243,161,43,0.15); border-radius: 8px; padding: 10px; cursor: pointer; transition: all 0.2s ease; display: flex; flex-direction: column; gap: 4px;"
         onmouseenter="this.style.borderColor='rgba(243,161,43,0.5)'; this.style.background='rgba(243,161,43,0.12)';"
         onmouseleave="this.style.borderColor='rgba(243,161,43,0.15)'; this.style.background='rgba(243,161,43,0.06)';">
-        <strong style="font-size: 0.78rem; color: var(--amber); word-break: break-all;">📊 ${f.name.replace("_ACTIVITY.fit","")}</strong>
+        <strong style="font-size: 0.78rem; color: var(--amber); word-break: break-all;">📊 ${escapeHtml(f.name.replace("_ACTIVITY.fit",""))}</strong>
         <span style="font-size: 0.7rem; color: var(--muted);">${f.sizeKB} KB</span>
       </div>
     `).join("");
@@ -2687,6 +2717,7 @@ async function trainAllFitData() {
         research_sources: state.research.sources,
         cv_analysis: buildVisionPayload(state.vision.frameAnalyses),
         model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+        provider: getGemmaProviderPreference(),
         local_model_path: el.localGemmaPathInput?.value.trim() || ""
       })
     });
@@ -2726,6 +2757,9 @@ if (ocrDotsToggle) {
     ocrDotsEnabled = ocrDotsToggle.checked;
     if (ocrDotsEnabled) {
       createOcrOverlay();
+      if (state.vision.liveLatest?.landmarks) {
+        renderOcrDots(state.vision.liveLatest.landmarks, state.vision.liveLatest.assessment);
+      }
     } else {
       removeOcrOverlay();
     }
@@ -2902,14 +2936,13 @@ function renderOcrDots(landmarks, assessment) {
 
 // Hook into the live vision loop to render OCR dots
 const _originalUpdateLive = updateLiveStateFromAnalysis;
-const patchedUpdateLive = function(analysis, opts) {
+updateLiveStateFromAnalysis = function patchedUpdateLive(analysis, opts) {
   _originalUpdateLive.call(this, analysis, opts);
   if (analysis?.landmarks && ocrDotsEnabled) {
     renderOcrDots(analysis.landmarks, analysis.assessment);
   }
 };
 // Monkey-patch — we call renderOcrDots from the live loop callback
-const _origAnalyzeFrame = analyzeCurrentVideoFrame;
 
 // Auto-load WhatsApp videos and FIT library on start
 setTimeout(() => {

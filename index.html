@@ -776,7 +776,7 @@
             </div>
             <div class="gemma-runner">
               <div>
-                <h3>Repository-local Gemma 4</h3>
+                <h3>Gemma 4 runtime</h3>
                 <p id="gemmaStatus">Idle</p>
               </div>
               <div class="gemma-controls">
@@ -786,8 +786,8 @@
             </div>
             <div class="gemma-runner" style="margin-top:-2px;">
               <div>
-                <h3>Model directory</h3>
-                <p>FormForward now uses the repo-local Gemma runtime by default. Adjust the model path only if your weights live somewhere else.</p>
+                <h3>Optional model directory</h3>
+                <p>The local gateway tries Ollama first, then falls back to this Hugging Face model directory when it exists.</p>
               </div>
               <div class="gemma-controls">
                 <input id="localGemmaPathInput" aria-label="Local Gemma path" placeholder="./local-models/gemma4" />
@@ -811,14 +811,14 @@
               <div class="gemma-controls" style="margin-top: 14px; flex-direction: column; align-items: stretch; gap: 8px; width: 100%;">
                 <div style="display: flex; gap: 8px; width: 100%;">
                   <select id="apiSourceMode" style="flex-grow: 1; width: 60%; min-width: 180px; background: rgba(0,0,0,0.3); border: 2px solid var(--line); border-radius: var(--radius-sm); padding: 8px 12px; color: #fff; font-family: 'Nunito'; font-weight: 700; font-size: 0.88rem; cursor: pointer; outline: none;" onchange="localStorage.setItem('ff_api_mode', this.value); window.dispatchEvent(new Event('api-mode-change'));">
-                    <option value="auto">🌐 Serverless Auto</option>
+                    <option value="auto">🌐 Vercel + Local Gateway</option>
                     <option value="local-hub">💻 Local Hub (Direct)</option>
                     <option value="ollama">🦙 Ollama Node (Direct)</option>
                   </select>
                   <input id="customApiBaseInput" type="text" placeholder="Custom Hub Address (http://localhost:5173)" style="flex-grow: 1; font-size: 0.82rem; font-family: monospace;" onchange="localStorage.setItem('ff_custom_base', this.value);" />
                 </div>
                 <p style="font-size: 0.78rem; color: var(--muted); margin-top: 6px; line-height: 1.3;">
-                  💡 <strong>Direct Node Tip:</strong> Launch Ollama with <code>OLLAMA_ORIGINS="*" ollama serve</code> to enable edge telemetry ingestion on remote domains.
+                  💡 <strong>Gateway Tip:</strong> For Vercel, keep this Node gateway running locally and let it proxy Gemma 4 through Ollama or the repo-local model.
                 </p>
               </div>
             </div>

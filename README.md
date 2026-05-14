@@ -16,7 +16,7 @@ FormForward is an AI-powered running form analysis platform that combines:
 - **Web scraping** (Scrapy-powered article ingestion)
 - **LLM coaching** (Gemma 4 via Ollama or a repository-local Hugging Face model path)
 
-All processing happens **locally on your machine** — your data never leaves your device.
+Core analysis happens **locally on your machine** — your activity data, videos, PDFs, and model inference stay on your device when using the local gateway. Browser assets such as MediaPipe/PDF.js may be loaded from their configured CDNs unless you vendor them locally.
 
 ---
 
@@ -76,6 +76,16 @@ Navigate to [http://localhost:5173](http://localhost:5173)
 
 ---
 
+## Deployment
+
+Vercel hosts the static web app. Gemma 4, PDF extraction, uploads, and local activity libraries run through the local Node gateway started with `node server.js`.
+
+For Vercel usage, keep the gateway running locally and leave the AI Coach API mode on `Vercel + Local Gateway`. The gateway proxies Gemma 4 through Ollama first, then falls back to a repo-local Hugging Face model at `./local-models/gemma4`.
+
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full setup.
+
+---
+
 ## 🧪 Usage
 
 ### Dashboard
@@ -92,10 +102,10 @@ Navigate to [http://localhost:5173](http://localhost:5173)
 - Paste URLs to scrape running form articles
 - Upload biomechanical research PDFs for inline preview and local text extraction
 
-### Repository-local Gemma
-- Use the **Repository-local provider** field on the AI Coach tab
-- Point it to a downloaded Gemma model directory such as `./local-models/gemma4`
-- This removes the runtime dependency on Ollama, but you still need to download the model weights separately
+### Gemma 4 runtime
+- The local gateway tries Ollama first with `gemma4:latest`
+- If Ollama is unavailable, it falls back to a downloaded Hugging Face model directory such as `./local-models/gemma4`
+- You can still point the model directory field at another local model path
 
 ### Full Pipeline
 1. Upload a PDF (optional) in the Research tab
@@ -167,7 +177,7 @@ curl -X POST http://localhost:5173/api/analyze-form \
 
 ## 🔒 Privacy
 
-- **100% local processing** — no cloud dependencies
+- **Local-first processing** — model inference, uploads, and private run libraries stay on your machine
 - **Ollama inference** — LLM runs on your hardware
 - **No telemetry** — zero data collection
 - **Proxy wording** — AI uses cautious language, never diagnoses injuries

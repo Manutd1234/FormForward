@@ -12,7 +12,7 @@ class GemmaService {
   Future<Map<String, dynamic>?> chat(String prompt, {Map<String, dynamic>? visionPayload}) async {
     try {
       final body = <String, dynamic>{
-        'model': 'gemma3:4b',
+        'model': 'gemma4:latest',
         'prompt': prompt,
         'stream': false,
       };
