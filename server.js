@@ -58,6 +58,10 @@ createServer(async (request, response) => {
       await handleListWhatsAppVideos(request, response);
       return;
     }
+    if (url.pathname === "/api/upload" && request.method === "POST") {
+      await handleUpload(request, response);
+      return;
+    }
     await serveStatic(url.pathname, response);
   } catch (error) {
     writeJson(response, { error: error.message }, 500);
@@ -288,7 +292,7 @@ CRITICAL: You MUST return valid JSON with these EXACT fields:
 
   // Attach video frames if available
   if (video_frames?.length) {
-    messages[1].images = video_frames.map(f => f.base64).filter(Boolean).slice(0, 4);
+    messages[0].images = video_frames.map(f => f.base64).filter(Boolean).slice(0, 4);
   }
 
   pipelineStages.push({ stage: "prompt_construction", status: "success", message_length: userContent.length });
@@ -549,5 +553,39 @@ async function handleListWhatsAppVideos(_request, response) {
     writeJson(response, { videos: details, count: details.length });
   } catch (err) {
     writeJson(response, { videos: [], count: 0, error: err.message });
+  }
+}
+
+async function handleUpload(request, response) {
+  try {
+    const { filename, base64_data, type } = await readJsonBody(request, 100_000_000); // up to 100MB
+    if (!filename || !base64_data || !type) {
+      writeJson(response, { error: "Missing required fields: filename, base64_data, type" }, 400);
+      return;
+    }
+    
+    let destDir = "";
+    if (type === "fit" || type === "csv") {
+      destDir = join(rootDir, "data", "fit");
+    } else if (type === "video") {
+      destDir = join(rootDir, "data", "videos");
+    } else {
+      writeJson(response, { error: "Invalid file type: " + type }, 400);
+      return;
+    }
+
+    const safeName = filename.replace(/[^a-z0-9_.-]/gi, "_");
+    const destPath = join(destDir, safeName);
+    
+    await writeFile(destPath, Buffer.from(base64_data, "base64"));
+    
+    writeJson(response, { 
+      ok: true, 
+      message: "Saved to backend", 
+      filename: safeName, 
+      path: `/data/${type === "video" ? "videos" : "fit"}/${safeName}` 
+    });
+  } catch (error) {
+    writeJson(response, { error: "Upload failed: " + error.message }, 500);
   }
 }

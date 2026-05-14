@@ -68,6 +68,10 @@ const state = {
     liveLatest: null,
     liveGemma: { status: "Waiting for live data", narrative: "", running: false, error: null, lastUpdated: null }
   },
+  chat: {
+    history: [],
+    running: false
+  },
   player: {
     level: 1,
     xp: 0,
@@ -121,11 +125,20 @@ const el = {
   generateGemmaButton: qs("#generateGemmaButton"),
   gemmaModelInput: qs("#gemmaModelInput"),
   localGemmaPathInput: qs("#localGemmaPathInput"),
+  localHubBadge: qs("#localHubBadge"),
+  localGemmaBadge: qs("#localGemmaBadge"),
+  apiSourceMode: qs("#apiSourceMode"),
+  customApiBaseInput: qs("#customApiBaseInput"),
   gemmaStatus: qs("#gemmaStatus"),
   gemmaOutput: qs("#gemmaOutput"),
   coachList: qs("#coachList"),
   payloadOutput: qs("#payloadOutput"),
   copyPayloadButton: qs("#copyPayloadButton"),
+  chatArea: qs("#chatArea"),
+  chatInput: qs("#chatInput"),
+  chatForm: qs("#chatForm"),
+  chatWelcome: qs("#chatWelcome"),
+  resetChatButton: qs("#resetChatButton"),
   availableMetrics: qs("#availableMetrics"),
   missingMetrics: qs("#missingMetrics"),
   analyzeVisionButton: qs("#analyzeVisionButton"),
@@ -179,6 +192,15 @@ const el = {
 el.gemmaModelInput.value = DEFAULT_MODEL;
 if (el.localGemmaPathInput) el.localGemmaPathInput.value = "local-models/gemma4";
 
+// Hydrate and Boot Local Gateway Polling
+if (el.apiSourceMode) {
+  el.apiSourceMode.value = localStorage.getItem("ff_api_mode") || "auto";
+}
+if (el.customApiBaseInput) {
+  el.customApiBaseInput.value = localStorage.getItem("ff_custom_base") || "";
+}
+startNetworkStatusPolling();
+
 // Initialize vision pipeline
 initVision().then((ok) => {
   state.vision.ready = ok;
@@ -198,8 +220,12 @@ el.fileInput.addEventListener("change", async ({ target }) => {
   if (file.name.toLowerCase().endsWith(".fit")) {
     const buffer = await file.arrayBuffer();
     loadFitActivity(buffer, file.name);
+    uploadFileToBackend(file, "fit"); // Auto persist to backend Garmin FIT Data Library
   } else {
     loadActivity(await file.text(), file.name);
+    if (file.name.toLowerCase().endsWith(".csv")) {
+      uploadFileToBackend(file, "csv"); // Auto persist to backend Garmin library
+    }
   }
 });
 el.loadSampleButton.addEventListener("click", () => loadActivity(SAMPLE_CSV, "Sample CSV run"));
@@ -207,7 +233,10 @@ el.loadSampleGpxButton.addEventListener("click", () => loadActivity(buildSampleG
 el.liveTrackingButton?.addEventListener("click", toggleLiveTracking);
 el.videoInput.addEventListener("change", async ({ target }) => {
   const [file] = target.files;
-  if (file) await handleVideoUpload(file);
+  if (file) {
+    await handleVideoUpload(file);
+    uploadFileToBackend(file, "video"); // Auto persist to backend WhatsApp Videos library
+  }
 });
 el.pdfInput?.addEventListener("change", ({ target }) => {
   const [file] = target.files;
@@ -227,6 +256,16 @@ el.copyPayloadButton.addEventListener("click", async () => {
   setTimeout(() => { el.copyPayloadButton.textContent = "Copy JSON"; }, 1200);
 });
 el.generateGemmaButton.addEventListener("click", generateGemma);
+el.chatForm?.addEventListener("submit", submitChat);
+el.resetChatButton?.addEventListener("click", resetChat);
+document.querySelectorAll(".suggestion-chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    if (el.chatInput && !state.chat.running) {
+      el.chatInput.value = chip.getAttribute("data-prompt") || "";
+      submitChat();
+    }
+  });
+});
 
 // Tab switching
 el.tabBar.addEventListener("click", ({ target }) => {
@@ -604,6 +643,32 @@ function renderEvents() {
 
 function renderCoach() {
   el.coachList.innerHTML = state.analysis.patterns.length ? state.analysis.patterns.map((pattern) => `<article class="coach-card"><div class="coach-card-heading"><div><span>${pattern.confidence}</span><h3>${pattern.title}</h3></div><strong>S${pattern.severity}</strong></div><dl><div><dt>Cue</dt><dd>${pattern.cue}</dd></div><div><dt>Drill</dt><dd>${pattern.drill}</dd></div><div><dt>Next run</dt><dd>${pattern.nextRunFocus}</dd></div></dl></article>`).join("") : `<p class="empty-state">Run looked stable against the current POSE proxy rules.</p>`;
+}
+
+async function uploadFileToBackend(file, type) {
+  try {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    await new Promise((resolve) => { reader.onload = resolve; });
+    const base64 = reader.result.split(",")[1];
+    const response = await fetch(getApiUrl("/api/upload"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, base64_data: base64, type })
+    });
+    const result = await response.json();
+    if (result.ok) {
+      console.log(`Uploaded ${file.name} to backend successfully.`);
+      if ((type === "fit" || type === "csv") && typeof loadFitLibrary === "function") {
+        loadFitLibrary();
+      }
+      if (type === "video" && typeof loadWhatsAppVideos === "function") {
+        loadWhatsAppVideos();
+      }
+    }
+  } catch (err) {
+    console.warn("File upload backend replication failed:", err);
+  }
 }
 
 async function handleVideoUpload(file) {
@@ -1256,23 +1321,17 @@ async function scheduleLiveGemmaNarrative() {
   };
 
   try {
-    const response = await fetch("/api/gemma", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
-        local_model_path: el.localGemmaPathInput?.value.trim() || "",
-        messages: [
-          { role: "user", content: `You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON.\n\n${JSON.stringify(prompt)}` }
-        ],
-        stream: false,
-        format: "json",
-        options: { temperature: 0.1, num_predict: 180 }
-      })
+    const body = await callGemmaEndpoint({
+      model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+      local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      messages: [
+        { role: "user", content: `You are a concise running form coach. Use only the provided pose-analysis data. Return strict JSON.\n\n${JSON.stringify(prompt)}` }
+      ],
+      stream: false,
+      format: "json",
+      options: { temperature: 0.1, num_predict: 180 }
     });
-    const body = await response.json();
-    if (body.error) throw new Error(body.error);
-    const parsed = safeJson(body.message?.content || body.response || "{}");
+    const parsed = safeJson(body.content);
     state.vision.liveGemma = {
       status: "Gemma 4 live explanation ready",
       narrative: cleanGemmaField(parsed.realtime_explanation) || fallbackLiveNarrative(live),
@@ -1538,6 +1597,28 @@ async function runFullPipeline() {
   badge.className = "pipeline-badge running";
   badge.querySelector("span:last-child").textContent = "Processing…";
 
+  // Stage 0: Seamlessly scrape research URLs if provided but not yet loaded
+  const urlsToScrape = (el.researchUrls?.value || "").split(/\n+/).map((url) => url.trim()).filter(Boolean);
+  const alreadyHasWebSources = state.research.sources.some((s) => s.source_type === "web_article" || (!s.isManual && !s.source_type?.includes("pdf")));
+  
+  if (urlsToScrape.length > 0 && !alreadyHasWebSources) {
+    badge.querySelector("span:last-child").textContent = "Scraping web sources…";
+    try {
+      const response = await apiJson("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ urls: urlsToScrape })
+      });
+      const body = await response.json();
+      const scraped = body.sources || [];
+      state.research.sources = [...state.research.manualSources, ...scraped];
+      state.research.status = `${scraped.filter((s) => s.ok).length}/${scraped.length} web sources gathered automatically.`;
+      renderResearch();
+    } catch (err) {
+      console.warn("Pipeline auto-scrape failed:", err);
+    }
+  }
+
   // Gather all available context
   const pdfFile = el.pdfInput?.files?.[0];
   let pdfData = null;
@@ -1575,7 +1656,7 @@ async function runFullPipeline() {
   badge.querySelector("span:last-child").textContent = "Querying Gemma 4…";
 
   try {
-    const response = await fetch("/api/analyze-form", {
+    const response = await fetch(getApiUrl("/api/analyze-form"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -1803,13 +1884,160 @@ async function extractPdfTextInBrowser(file) {
   return chunks.join("\n\n");
 }
 
+function getApiUrl(path) {
+  const mode = el.apiSourceMode?.value || localStorage.getItem("ff_api_mode") || "auto";
+  let base = "";
+
+  if (mode === "local-hub") {
+    base = el.customApiBaseInput?.value || "http://localhost:5173";
+  } else if (mode === "ollama") {
+    // Standard APIs fallback to standard local gateway, Gemma routes to Ollama direct!
+    base = "http://localhost:5173";
+  } else if (mode === "auto") {
+    if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+      base = "http://localhost:5173";
+    }
+  }
+  
+  if (base && (path.startsWith("/") || path.startsWith("data/"))) {
+    const normalizedPath = path.startsWith("/") ? path : "/" + path;
+    return base.replace(/\/$/, "") + normalizedPath;
+  }
+  return path;
+}
+
+async function callGemmaEndpoint(payload) {
+  const mode = el.apiSourceMode?.value || "auto";
+  let url = "/api/gemma";
+  let requestBody = { ...payload };
+  
+  if (mode === "local-hub") {
+    const customBase = el.customApiBaseInput?.value || "http://localhost:5173";
+    url = customBase.replace(/\/$/, "") + "/api/gemma";
+  } else if (mode === "ollama") {
+    const ollamaBase = el.customApiBaseInput?.value || "http://localhost:11434";
+    url = ollamaBase.replace(/\/$/, "") + "/api/chat";
+    requestBody = {
+      model: payload.model || DEFAULT_MODEL,
+      messages: payload.messages.map(m => {
+        const n = { role: m.role, content: m.content };
+        if (m.images) n.images = m.images;
+        return n;
+      }),
+      stream: false
+    };
+    if (payload.format === "json") requestBody.format = "json";
+    if (payload.options) {
+      requestBody.options = {
+        temperature: payload.options.temperature,
+        num_predict: payload.options.num_predict
+      };
+    }
+  } else if (mode === "auto") {
+    if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+      url = "http://localhost:5173/api/gemma";
+    }
+  }
+  
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody)
+  });
+  
+  const rawText = await response.text();
+  let data = {};
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error("Invalid API response payload received.");
+  }
+  
+  if (data.error) throw new Error(data.error);
+  return {
+    content: data.message?.content || data.response || ""
+  };
+}
+
+async function startNetworkStatusPolling() {
+  async function checkStatus() {
+    const customBase = el.customApiBaseInput?.value || "http://localhost:5173";
+    const nodeBase = customBase.replace(/\/$/, "");
+    
+    let nodeOk = false;
+    try {
+      const resp = await fetch("http://localhost:5173/api/health", { signal: AbortSignal.timeout(1200) });
+      nodeOk = resp.ok;
+    } catch {
+      if (nodeBase !== "http://localhost:5173") {
+        try {
+          const resp = await fetch(`${nodeBase}/api/health`, { signal: AbortSignal.timeout(1200) });
+          nodeOk = resp.ok;
+        } catch {}
+      }
+    }
+    
+    if (el.localHubBadge) {
+      const dot = el.localHubBadge.querySelector(".badge-dot");
+      if (nodeOk) {
+        el.localHubBadge.style.background = "rgba(0, 230, 118, 0.15)";
+        el.localHubBadge.style.borderColor = "var(--green)";
+        el.localHubBadge.style.color = "var(--green)";
+        el.localHubBadge.childNodes[2].textContent = " GATEWAY: ONLINE";
+        if (dot) { dot.style.background = "var(--green)"; dot.style.boxShadow = "0 0 6px var(--green)"; }
+      } else {
+        el.localHubBadge.style.background = "rgba(255, 51, 102, 0.1)";
+        el.localHubBadge.style.borderColor = "var(--red)";
+        el.localHubBadge.style.color = "var(--red)";
+        el.localHubBadge.childNodes[2].textContent = " GATEWAY: OFFLINE";
+        if (dot) { dot.style.background = "var(--red)"; dot.style.boxShadow = "none"; }
+      }
+    }
+
+    let gemmaOk = false;
+    let gemmaText = "NODE: OFFLINE";
+    try {
+      const resp = await fetch("http://localhost:11434/api/tags", { signal: AbortSignal.timeout(1200) });
+      if (resp.ok) {
+        gemmaOk = true;
+        gemmaText = "GEMMA 4: RUNNING (OLLAMA)";
+      }
+    } catch {
+      if (nodeOk) {
+        gemmaOk = true;
+        gemmaText = "GEMMA 4: DETECTED (PYTHON)";
+      }
+    }
+
+    if (el.localGemmaBadge) {
+      const dot = el.localGemmaBadge.querySelector(".badge-dot");
+      if (gemmaOk) {
+        el.localGemmaBadge.style.background = "rgba(0, 229, 255, 0.15)";
+        el.localGemmaBadge.style.borderColor = "var(--accent)";
+        el.localGemmaBadge.style.color = "var(--accent)";
+        el.localGemmaBadge.childNodes[2].textContent = " " + gemmaText;
+        if (dot) { dot.style.background = "var(--accent)"; dot.style.boxShadow = "0 0 6px var(--accent)"; }
+      } else {
+        el.localGemmaBadge.style.background = "rgba(255, 255, 255, 0.05)";
+        el.localGemmaBadge.style.borderColor = "rgba(255, 255, 255, 0.15)";
+        el.localGemmaBadge.style.color = "var(--muted)";
+        el.localGemmaBadge.childNodes[2].textContent = " GEMMA 4: OFFLINE";
+        if (dot) { dot.style.background = "var(--muted)"; dot.style.boxShadow = "none"; }
+      }
+    }
+  }
+  checkStatus();
+  setInterval(checkStatus, 6000);
+  window.addEventListener("api-mode-change", checkStatus);
+}
+
 async function apiJson(path, options = {}, retries = 1, timeoutMs = 15000) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(path, { ...options, signal: controller.signal });
+      const response = await fetch(getApiUrl(path), { ...options, signal: controller.signal });
       clearTimeout(timeout);
       if (!response.ok) {
         let message = `${response.status} ${response.statusText}`;
@@ -1842,14 +2070,15 @@ async function generateGemma() {
   const userMessage = { role: "user", content: `${system}\n\nCreate one concise coaching response from this payload:\n${JSON.stringify(report)}` };
   if (state.video.frames.length) userMessage.images = state.video.frames.map((frame) => frame.base64);
   try {
-    const response = await fetch("/api/gemma", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL, local_model_path: el.localGemmaPathInput?.value.trim() || "", messages: [userMessage], stream: false, format: "json", options: { temperature: 0.2, num_predict: 420 } })
+    const body = await callGemmaEndpoint({
+      model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+      local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      messages: [userMessage],
+      stream: false,
+      format: "json",
+      options: { temperature: 0.2, num_predict: 420 }
     });
-    const body = await response.json();
-    if (body.error) throw new Error(body.error);
-    state.gemma = { status: "Generated by local Gemma 4", output: normalizeGemmaOutput(body.message?.content || body.response || "{}"), error: null, running: false };
+    state.gemma = { status: "Generated by local Gemma 4", output: normalizeGemmaOutput(body.content), error: null, running: false };
   } catch (error) {
     state.gemma = { status: "Local Gemma runtime unavailable", output: null, error: error.message, running: false };
   }
@@ -1865,6 +2094,178 @@ function renderGemma() {
     el.gemmaOutput.innerHTML = `<article class="gemma-card"><dl><div><dt>Cue</dt><dd>${escapeHtml(output.correction_cue || "")}</dd></div><div><dt>Drill</dt><dd>${escapeHtml(output.drill || "")}</dd></div><div><dt>Next run</dt><dd>${escapeHtml(output.next_run_focus || "")}</dd></div><div><dt>Video</dt><dd>${escapeHtml(output.visual_observations || "")}</dd></div><div><dt>Research</dt><dd>${escapeHtml(output.research_notes || "")}</dd></div></dl></article>`;
   } else if (state.gemma.error) el.gemmaOutput.innerHTML = `<p class="gemma-error">${escapeHtml(state.gemma.error)}</p>`;
   else el.gemmaOutput.innerHTML = "";
+}
+
+async function submitChat(e) {
+  if (e) e.preventDefault();
+  const text = el.chatInput?.value?.trim();
+  if (!text || state.chat.running) return;
+  
+  if (el.chatInput) el.chatInput.value = "";
+  addChatMessage("user", text);
+  
+  if (el.chatWelcome) el.chatWelcome.style.display = "none";
+  state.chat.running = true;
+  
+  const loaderId = addChatBubble("coach", "Connecting to your Gemma 4 Coach...", true);
+  
+  try {
+    const currentScore = state.vision.liveLatest?.assessment?.score || null;
+    const activeIssues = state.vision.liveLatest?.assessment?.issues?.map(i => i.label) || [];
+    
+    const systemPrompt = `You are FormForward, an advanced AI Biomechanics and running form coach. 
+We are currently in an interactive, multi-turn coaching chat. 
+
+RUNNER BIOMETRIC DATA FOR YOUR AWARENESS:
+- Current biomechanical form score: ${currentScore ? currentScore + "/100" : "Not measured yet (tell them to record dynamic video/live tracking)"}
+- Logged dynamic mistakes: ${activeIssues.length ? activeIssues.join(", ") : "None critical measured"}
+- Metric Summary Payload: ${JSON.stringify(state.analysis?.gemmaPayload || {})}
+- Scraped Biomechanics Research: ${JSON.stringify(state.research.sources.filter(s => s.ok).slice(0, 2).map(s => ({ title: s.title, context: s.summary })))}
+
+CONVERSATION INSTRUCTIONS:
+1. Maintain a dynamic, encouraging, high-energy, yet professional coaching presence.
+2. Use the biomechanical context above to offer DIRECT, CUSTOM solutions. NEVER make up numbers. Reference their exact mistakes (like overstriding or torso lean angle).
+3. Do NOT output raw JSON. Talk back naturally in standard chat text. 
+4. Give quick, action-oriented advice. Keep paragraphs compact and readable. 
+5. Frame suggestions safely as coaching insights, not medical diagnoses.`;
+
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...state.chat.history.map(h => ({ role: h.role === "user" ? "user" : "assistant", content: h.content })),
+      { role: "user", content: text }
+    ];
+
+    const body = await callGemmaEndpoint({
+      model: el.gemmaModelInput.value.trim() || DEFAULT_MODEL,
+      local_model_path: el.localGemmaPathInput?.value.trim() || "",
+      messages: messages,
+      stream: false,
+      format: "text",
+      options: { temperature: 0.4, num_predict: 350 }
+    });
+    
+    const responseText = body.content || "FormForward Coach successfully processed your telemetry.";
+    
+    const bubbleNode = document.getElementById(loaderId);
+    if (bubbleNode) {
+      const container = bubbleNode.querySelector(".chat-content");
+      if (container) {
+        container.textContent = responseText;
+        container.classList.remove("typing-dots");
+        container.style.color = "var(--cream)";
+      }
+      bubbleNode.removeAttribute("id");
+    }
+    
+    state.chat.history.push({ role: "user", content: text });
+    state.chat.history.push({ role: "coach", content: responseText });
+    
+    // Gamification reward
+    if (typeof gainXp === "function") {
+      gainXp(5);
+    }
+    
+  } catch (err) {
+    console.warn("Coach query failed:", err);
+    const bubbleNode = document.getElementById(loaderId);
+    if (bubbleNode) {
+      const container = bubbleNode.querySelector(".chat-content");
+      if (container) {
+        container.textContent = "⚡ FormForward is waiting for local Gemma runtime: " + err.message;
+        container.classList.remove("typing-dots");
+        container.style.color = "var(--red)";
+      }
+    }
+  } finally {
+    state.chat.running = false;
+    scrollToBottom();
+  }
+}
+
+function addChatMessage(role, text) {
+  addChatBubble(role, text);
+  scrollToBottom();
+}
+
+function addChatBubble(role, text, isLoader = false) {
+  if (!el.chatArea) return null;
+  const bubbleId = `cb-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const row = document.createElement("div");
+  row.id = bubbleId;
+  row.style.display = "flex";
+  row.style.gap = "12px";
+  row.style.maxWidth = "88%";
+  row.style.alignSelf = role === "user" ? "flex-end" : "flex-start";
+  row.style.flexDirection = role === "user" ? "row-reverse" : "row";
+  row.style.animation = "slideBubbleIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards";
+  
+  const icon = document.createElement("div");
+  icon.style.width = "34px";
+  icon.style.height = "34px";
+  icon.style.borderRadius = "50%";
+  icon.style.display = "grid";
+  icon.style.placeItems = "center";
+  icon.style.flexShrink = "0";
+  icon.style.fontSize = "1rem";
+  
+  if (role === "user") {
+    icon.textContent = "🏃";
+    icon.style.background = "rgba(255,255,255,0.1)";
+    icon.style.border = "2px solid #fff";
+  } else {
+    icon.textContent = "🤖";
+    icon.style.background = "linear-gradient(135deg, var(--accent), var(--violet))";
+    icon.style.border = "2px solid #fff";
+    icon.style.boxShadow = "0 0 10px rgba(0, 240, 255, 0.2)";
+  }
+  
+  const box = document.createElement("div");
+  box.className = "chat-content";
+  box.style.padding = "12px 16px";
+  box.style.borderRadius = role === "user" ? "16px 4px 16px 16px" : "4px 16px 16px 16px";
+  box.style.fontSize = "0.92rem";
+  box.style.lineHeight = "1.5";
+  box.style.whiteSpace = "pre-wrap";
+  box.style.wordBreak = "break-word";
+  
+  if (role === "user") {
+    box.style.background = "rgba(0, 240, 255, 0.15)";
+    box.style.border = "2px solid var(--accent)";
+    box.style.color = "#fff";
+  } else {
+    box.style.background = "var(--surface)";
+    box.style.border = "2px solid rgba(255, 255, 255, 0.1)";
+    box.style.color = "var(--muted)";
+  }
+  
+  box.textContent = text;
+  if (isLoader) {
+    box.classList.add("typing-dots");
+  }
+  
+  row.appendChild(icon);
+  row.appendChild(box);
+  el.chatArea.appendChild(row);
+  
+  return bubbleId;
+}
+
+function resetChat() {
+  if (!el.chatArea) return;
+  state.chat.history = [];
+  
+  // Keep just the welcome screen
+  el.chatArea.innerHTML = "";
+  if (el.chatWelcome) {
+    el.chatArea.appendChild(el.chatWelcome);
+    el.chatWelcome.style.display = "block";
+  }
+}
+
+function scrollToBottom() {
+  if (el.chatArea) {
+    el.chatArea.scrollTo({ top: el.chatArea.scrollHeight, behavior: "smooth" });
+  }
 }
 
 function normalizeGemmaOutput(raw) {
@@ -2083,7 +2484,7 @@ if (loadWhatsappButton) {
 async function loadWhatsAppVideos() {
   if (whatsappStatus) whatsappStatus.textContent = "Loading WhatsApp videos...";
   try {
-    const response = await fetch("/api/whatsapp-videos");
+    const response = await fetch(getApiUrl("/api/whatsapp-videos"));
     const data = await response.json();
     if (!data.videos?.length) {
       whatsappStatus.textContent = "No WhatsApp videos found in data/videos/.";
@@ -2091,7 +2492,7 @@ async function loadWhatsAppVideos() {
     }
     whatsappVideoGrid.innerHTML = data.videos.map((v, i) => `
       <div class="whatsapp-video-card" style="background: rgba(37,211,102,0.05); border: 1px solid rgba(37,211,102,0.2); border-radius: 12px; overflow: hidden; transition: all 0.3s ease;">
-        <video src="${v.path}" preload="metadata" muted playsinline style="width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: pointer;"
+        <video src="${getApiUrl(v.path)}" preload="metadata" muted playsinline style="width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: pointer;"
           onmouseenter="this.play()" onmouseleave="this.pause();this.currentTime=0;"></video>
         <div style="padding: 10px;">
           <strong style="font-size: 0.85rem; color: #fff;">Run Video ${i + 1}</strong>
@@ -2111,7 +2512,7 @@ async function loadWhatsAppVideos() {
         btn.textContent = "⏳ Analyzing…";
         btn.disabled = true;
         try {
-          const resp = await fetch(videoPath);
+          const resp = await fetch(getApiUrl(videoPath));
           const blob = await resp.blob();
           const file = new File([blob], videoPath.split("/").pop(), { type: "video/mp4" });
           await handleVideoUpload(file);
@@ -2135,7 +2536,7 @@ async function loadWhatsAppVideos() {
         btn.textContent = "⏳ Training…";
         btn.disabled = true;
         try {
-          const resp = await fetch(videoPath);
+          const resp = await fetch(getApiUrl(videoPath));
           const blob = await resp.blob();
           const file = new File([blob], videoPath.split("/").pop(), { type: "video/mp4" });
           await handleVideoUpload(file);
@@ -2172,7 +2573,7 @@ const fitLibrary = { files: [], parsedRuns: [], loaded: false };
 async function loadFitLibrary() {
   if (fitTrainingStatus) fitTrainingStatus.textContent = "Scanning FIT library…";
   try {
-    const response = await fetch("/api/fit-files");
+    const response = await fetch(getApiUrl("/api/fit-files"));
     const data = await response.json();
     fitLibrary.files = data.files || [];
     if (!fitLibrary.files.length) {
@@ -2195,7 +2596,7 @@ async function loadFitLibrary() {
         const f = fitLibrary.files[idx];
         card.style.opacity = "0.5";
         try {
-          const resp = await fetch(f.path);
+          const resp = await fetch(getApiUrl(f.path));
           const buffer = await resp.arrayBuffer();
           loadFitActivity(buffer, f.name);
           card.style.opacity = "1";
@@ -2234,7 +2635,7 @@ async function trainAllFitData() {
     const batch = fitLibrary.files.slice(i, i + batchSize);
     await Promise.all(batch.map(async (f) => {
       try {
-        const resp = await fetch(f.path);
+        const resp = await fetch(getApiUrl(f.path));
         const buffer = await resp.arrayBuffer();
         const result = parseFitFile(buffer);
         if (result.rows.length > 0) {
@@ -2275,7 +2676,7 @@ async function trainAllFitData() {
 
   // Feed into the Gemma pipeline
   try {
-    const response = await fetch("/api/analyze-form", {
+    const response = await fetch(getApiUrl("/api/analyze-form"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

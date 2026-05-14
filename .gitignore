@@ -9,3 +9,5 @@ scripts/__pycache__/
 scripts/scrapers/__pycache__/
 scripts/scrapers/PaddleOCR-main/
 scripts/scrapers/Scrapegraph-ai-main/
+.vercel
+.env*.local

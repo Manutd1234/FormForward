@@ -1,0 +1,13 @@
+# Exclude large local compute environments from cloud build
+.venv
+local-models
+data
+.DS_Store
+*.fit
+*.mp4
+*.mov
+*.csv
+scripts
+__pycache__
+formforward_app
+node_modules
